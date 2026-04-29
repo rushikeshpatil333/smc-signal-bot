@@ -137,6 +137,33 @@ class PublicDataFetcher:
         'XAUUSD','XAGUSD'
     ]
 
+    COINGECKO_MAP = {
+        'BTCUSDT' : 'bitcoin',
+        'ETHUSDT' : 'ethereum',
+        'SOLUSDT' : 'solana',
+        'BNBUSDT' : 'binancecoin',
+        'XRPUSDT' : 'ripple',
+        'ADAUSDT' : 'cardano',
+        'DOGEUSDT': 'dogecoin',
+        'DOTUSDT' : 'polkadot',
+        'AVAXUSDT': 'avalanche-2',
+        'LINKUSDT': 'chainlink',
+        'LTCUSDT' : 'litecoin',
+        'ATOMUSDT': 'cosmos',
+        'UNIUSDT' : 'uniswap',
+        'ETCUSDT' : 'ethereum-classic',
+    }
+
+    COINGECKO_TF_DAYS = {
+        '5m' : 1,
+        '15m': 1,
+        '30m': 2,
+        '1h' : 7,
+        '4h' : 30,
+        '1d' : 365,
+        '1w' : 365,
+    }
+
     def detect_type(self, symbol: str) -> str:
         crypto_endings = ['USDT', 'BTC', 'ETH', 'BNB', 'BUSD']
         s = symbol.upper().replace('/', '').replace('-', '')
@@ -156,9 +183,15 @@ class PublicDataFetcher:
         s     = self.normalize(symbol)
         kind  = self.detect_type(s)
         if kind == 'crypto':
+            # 1. Try Binance
             candles = self._binance(s, tf, limit)
             if not candles:
-                log.warning(f'Binance failed for {s}, trying yfinance...')
+                # 2. Try CoinGecko
+                log.warning(f'Binance failed for {s}, trying CoinGecko...')
+                candles = self._coingecko(s, tf, limit)
+            if not candles:
+                # 3. Try yfinance
+                log.warning(f'CoinGecko failed for {s}, trying yfinance...')
                 candles = self._yfinance(s, tf, limit)
             return candles
         return self._yfinance(s, tf, limit)
@@ -190,6 +223,48 @@ class PublicDataFetcher:
             ]
         except Exception as e:
             log.error(f'Binance fetch error: {e}')
+            return []
+
+    def _coingecko(self, symbol: str, tf: str,
+                   limit: int) -> List[Candle]:
+        try:
+            coin_id = self.COINGECKO_MAP.get(symbol)
+            if not coin_id:
+                log.warning(f'No CoinGecko mapping for {symbol}')
+                return []
+
+            days = self.COINGECKO_TF_DAYS.get(tf, 7)
+
+            url = (f'https://api.coingecko.com/api/v3/coins/{coin_id}'
+                   f'/ohlc?vs_currency=usd&days={days}')
+
+            r = requests.get(
+                url, timeout=15,
+                headers={'User-Agent': 'Mozilla/5.0'}
+            )
+            if r.status_code != 200:
+                log.error(f'CoinGecko error {r.status_code}: {r.text[:100]}')
+                return []
+
+            data = r.json()
+            if not data:
+                return []
+
+            candles = []
+            for row in data:
+                candles.append(Candle(
+                    time  = str(datetime.fromtimestamp(
+                        row[0]/1000, tz=timezone.utc)),
+                    open  = float(row[1]),
+                    high  = float(row[2]),
+                    low   = float(row[3]),
+                    close = float(row[4]),
+                    volume= 0.0
+                ))
+            return candles[-limit:]
+
+        except Exception as e:
+            log.error(f'CoinGecko fetch error: {e}')
             return []
 
     def _yfinance(self, symbol: str, tf: str,
@@ -257,8 +332,8 @@ class PublicDataFetcher:
     def _limit_to_period(self, tf: str, limit: int) -> str:
         period_map = {
             '1m' :'7d' ,'5m' :'60d','15m':'60d',
-            '30m':'60d','1h' :'730d','4h':'730d',
-            '1d' :'5y' ,'1w' :'10y','1M':'10y'
+            '30m':'60d','1h' :'730d','4h' :'730d',
+            '1d' :'5y' ,'1w' :'10y','1M' :'10y'
         }
         return period_map.get(tf, '60d')
 
@@ -516,14 +591,12 @@ class SMCAnalysisEngine:
         if idm_level:
             idm_swept = self.check_sweep(htf_candles, idm_level, direction)
 
-        obs       = self.find_obs(htf_candles, direction)
-        fresh_obs = [ob for ob in obs if ob.status == 'fresh']
-
+        obs        = self.find_obs(htf_candles, direction)
+        fresh_obs  = [ob for ob in obs if ob.status == 'fresh']
         fvgs       = self.find_fvgs(htf_candles, direction)
         fresh_fvgs = [f for f in fvgs if f.status == 'fresh']
-
-        liq    = self.find_liquidity(htf_candles)
-        ltf_ok = self.ltf_choch(ltf_candles, direction)
+        liq        = self.find_liquidity(htf_candles)
+        ltf_ok     = self.ltf_choch(ltf_candles, direction)
 
         best_ob = None
         for ob in reversed(fresh_obs):
