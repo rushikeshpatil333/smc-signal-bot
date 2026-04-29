@@ -3,11 +3,9 @@ SMC On-Demand Signal Bot
 """
 
 import os
-import io
 import time
 import logging
 import requests
-import yfinance as yf
 import concurrent.futures
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
@@ -121,16 +119,16 @@ class PublicDataFetcher:
         '6h':'6h','1d':'1d','1w':'1w','1M':'1M'
     }
 
-    YFINANCE_TF_MAP = {
+    YAHOO_INTERVAL_MAP = {
         '5m':'5m','15m':'15m','30m':'30m',
         '1h':'1h','4h':'1h','1d':'1d',
         '1w':'1wk','1M':'1mo'
     }
 
-    STOOQ_TF_MAP = {
-        '5m' :'5', '15m':'5', '30m':'5',
-        '1h' :'h', '4h' :'h', '1d' :'d',
-        '1w' :'w', '1M' :'m'
+    YAHOO_RANGE_MAP = {
+        '5m' :'7d',  '15m':'60d', '30m':'60d',
+        '1h' :'2y',  '4h' :'2y',  '1d' :'5y',
+        '1w' :'10y', '1M' :'10y'
     }
 
     FOREX_PAIRS = [
@@ -150,8 +148,7 @@ class PublicDataFetcher:
         'GBPSGD','GBPHKD','GBPTRY','GBPNOK','GBPSEK',
         'GBPZAR','GBPMXN',
         # AUD Crosses
-        'AUDJPY','AUDCAD','AUDCHF','AUDNZD','AUDSGD',
-        'AUDHKD',
+        'AUDJPY','AUDCAD','AUDCHF','AUDNZD','AUDSGD','AUDHKD',
         # NZD Crosses
         'NZDJPY','NZDCAD','NZDCHF','NZDSGD',
         # CAD Crosses
@@ -184,9 +181,40 @@ class PublicDataFetcher:
     }
 
     COINGECKO_TF_DAYS = {
-        '5m' : 1, '15m': 1, '30m': 2,
-        '1h' : 7, '4h' : 30,
-        '1d' : 365, '1w': 365,
+        '5m':'1','15m':'1','30m':'2',
+        '1h':'7','4h':'30','1d':'365','1w':'365',
+    }
+
+    YAHOO_SYMBOL_MAP = {
+        # Metals
+        'XAUUSD': 'GC=F',
+        'XAGUSD': 'SI=F',
+        'XPTUSD': 'PL=F',
+        'XPDUSD': 'PA=F',
+        # Oil
+        'USOIL' : 'CL=F',
+        'UKOIL' : 'BZ=F',
+        # Indices
+        'NIFTY50'  : '^NSEI',
+        'NIFTY'    : '^NSEI',
+        'BANKNIFTY': '^NSEBANK',
+        'SPX'      : '^GSPC',
+        'NDX'      : '^NDX',
+        'DJI'      : '^DJI',
+        'FTSE'     : '^FTSE',
+        'DAX'      : '^GDAXI',
+        # Crypto fallback
+        'BTCUSDT' : 'BTC-USD',
+        'ETHUSDT' : 'ETH-USD',
+        'SOLUSDT' : 'SOL-USD',
+        'BNBUSDT' : 'BNB-USD',
+        'XRPUSDT' : 'XRP-USD',
+        'ADAUSDT' : 'ADA-USD',
+        'DOGEUSDT': 'DOGE-USD',
+        'DOTUSDT' : 'DOT-USD',
+        'AVAXUSDT': 'AVAX-USD',
+        'LINKUSDT': 'LINK-USD',
+        'LTCUSDT' : 'LTC-USD',
     }
 
     def detect_type(self, symbol: str) -> str:
@@ -202,8 +230,6 @@ class PublicDataFetcher:
                 .replace('-', '')
                 .replace(' ', ''))
 
-    # ── Main fetch — crypto: Binance→CoinGecko→yfinance
-    #               forex:  Stooq→yfinance ──────────────
     def fetch(self, symbol: str, tf: str,
               limit: int = None) -> List[Candle]:
         limit = limit or Config.CANDLE_LIMIT
@@ -216,18 +242,15 @@ class PublicDataFetcher:
                 log.warning(f'Binance failed for {s}, trying CoinGecko...')
                 candles = self._coingecko(s, tf, limit)
             if not candles:
-                log.warning(f'CoinGecko failed for {s}, trying yfinance...')
-                candles = self._yfinance(s, tf, limit)
+                log.warning(f'CoinGecko failed for {s}, trying Yahoo...')
+                candles = self._yahoo(s, tf, limit)
             return candles
 
-        # Forex / Metals / Oil / Indices
-        candles = self._stooq(s, tf, limit)
-        if not candles:
-            log.warning(f'Stooq failed for {s}, trying yfinance...')
-            candles = self._yfinance(s, tf, limit)
+        # Forex / Metals / Oil / Indices → Yahoo direct API
+        candles = self._yahoo(s, tf, limit)
         return candles
 
-    # ── Binance ───────────────────────────────────────
+    # ── Binance ───────────────────────────────────────────
     def _binance(self, symbol: str, tf: str,
                  limit: int) -> List[Candle]:
         try:
@@ -257,23 +280,22 @@ class PublicDataFetcher:
             log.error(f'Binance fetch error: {e}')
             return []
 
-    # ── CoinGecko ─────────────────────────────────────
+    # ── CoinGecko ─────────────────────────────────────────
     def _coingecko(self, symbol: str, tf: str,
                    limit: int) -> List[Candle]:
         try:
             coin_id = self.COINGECKO_MAP.get(symbol)
             if not coin_id:
-                log.warning(f'No CoinGecko mapping for {symbol}')
                 return []
 
-            days = self.COINGECKO_TF_DAYS.get(tf, 7)
+            days = self.COINGECKO_TF_DAYS.get(tf, '7')
             url  = (f'https://api.coingecko.com/api/v3/coins/{coin_id}'
                     f'/ohlc?vs_currency=usd&days={days}')
 
             r = requests.get(url, timeout=15,
                              headers={'User-Agent': 'Mozilla/5.0'})
             if r.status_code != 200:
-                log.error(f'CoinGecko error {r.status_code}: {r.text[:100]}')
+                log.error(f'CoinGecko error {r.status_code}')
                 return []
 
             data = r.json()
@@ -297,148 +319,86 @@ class PublicDataFetcher:
             log.error(f'CoinGecko fetch error: {e}')
             return []
 
-    # ── Stooq (primary for forex/metals/indices) ──────
-    def _stooq(self, symbol: str, tf: str,
+    # ── Yahoo Finance Direct API (no yfinance library) ────
+    def _yahoo(self, symbol: str, tf: str,
                limit: int) -> List[Candle]:
         try:
-            stooq_symbol = self._to_stooq_symbol(symbol)
-            interval     = self.STOOQ_TF_MAP.get(tf, 'd')
-            url          = (f'https://stooq.com/q/d/l/'
-                            f'?s={stooq_symbol}&i={interval}')
+            yf_symbol = self._to_yahoo_symbol(symbol)
+            interval  = self.YAHOO_INTERVAL_MAP.get(tf, '1d')
+            range_    = self.YAHOO_RANGE_MAP.get(tf, '2y')
 
-            r = requests.get(url, timeout=15,
-                             headers={'User-Agent': 'Mozilla/5.0'})
-            if r.status_code != 200:
-                log.error(f'Stooq error {r.status_code} for {symbol}')
-                return []
-
-            text = r.text.strip()
-            if not text or 'No data' in text or len(text) < 30:
-                log.error(f'Stooq no data for {symbol}')
-                return []
-
-            lines   = text.split('\n')
-            candles = []
-            for line in lines[1:]:      # skip header row
-                parts = line.strip().split(',')
-                if len(parts) < 5:
-                    continue
+            # Try query1 then query2
+            for host in ['query1', 'query2']:
+                url = (f'https://{host}.finance.yahoo.com/v8/finance/chart/'
+                       f'{yf_symbol}?interval={interval}&range={range_}')
+                headers = {
+                    'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                                   'AppleWebKit/537.36 (KHTML, like Gecko) '
+                                   'Chrome/120.0.0.0 Safari/537.36'),
+                    'Accept'    : 'application/json',
+                }
                 try:
-                    candles.append(Candle(
-                        time  = parts[0],
-                        open  = float(parts[1]),
-                        high  = float(parts[2]),
-                        low   = float(parts[3]),
-                        close = float(parts[4]),
-                        volume= float(parts[5]) if len(parts) > 5 else 0.0
-                    ))
-                except Exception:
+                    r = requests.get(url, headers=headers, timeout=15)
+                    if r.status_code != 200:
+                        continue
+                    data = r.json()
+                    result = data.get('chart', {}).get('result', [])
+                    if not result:
+                        continue
+
+                    res       = result[0]
+                    ts_list   = res.get('timestamp', [])
+                    quote     = res['indicators']['quote'][0]
+                    opens     = quote.get('open',   [])
+                    highs     = quote.get('high',   [])
+                    lows      = quote.get('low',    [])
+                    closes    = quote.get('close',  [])
+                    volumes   = quote.get('volume', [])
+
+                    candles = []
+                    for i, ts in enumerate(ts_list):
+                        try:
+                            o = opens[i]
+                            h = highs[i]
+                            l = lows[i]
+                            c = closes[i]
+                            if None in (o, h, l, c):
+                                continue
+                            candles.append(Candle(
+                                time  = str(datetime.fromtimestamp(
+                                    ts, tz=timezone.utc)),
+                                open  = float(o),
+                                high  = float(h),
+                                low   = float(l),
+                                close = float(c),
+                                volume= float(volumes[i] or 0)
+                                        if i < len(volumes) else 0.0
+                            ))
+                        except Exception:
+                            continue
+
+                    if candles:
+                        log.info(f'Yahoo OK for {symbol} '
+                                 f'({yf_symbol}): {len(candles)} candles')
+                        return candles[-limit:]
+
+                except Exception as e:
+                    log.error(f'Yahoo {host} error for {symbol}: {e}')
                     continue
 
-            candles.sort(key=lambda x: x.time)
-            result = candles[-limit:] if candles else []
-            if result:
-                log.info(f'Stooq OK for {symbol}: {len(result)} candles')
-            return result
-
-        except Exception as e:
-            log.error(f'Stooq fetch error {symbol}: {e}')
+            log.error(f'Yahoo failed for {symbol} ({yf_symbol})')
             return []
 
-    def _to_stooq_symbol(self, symbol: str) -> str:
-        special = {
-            # Metals
-            'XAUUSD'   : 'xauusd',
-            'XAGUSD'   : 'xagusd',
-            'XPTUSD'   : 'xptusd',
-            'XPDUSD'   : 'xpdusd',
-            # Oil
-            'USOIL'    : 'cl.f',
-            'UKOIL'    : 'lcox.uk',
-            # Indices
-            'NIFTY50'  : '^nsei',
-            'NIFTY'    : '^nsei',
-            'BANKNIFTY': '^nsebank',
-            'SPX'      : '^spx',
-            'NDX'      : '^ndx',
-            'DJI'      : '^dji',
-            'FTSE'     : '^fta',
-            'DAX'      : '^dax',
-        }
-        if symbol in special:
-            return special[symbol]
-        # Forex pairs → lowercase e.g. EURUSD → eurusd
-        return symbol.lower()
-
-    # ── yfinance (fallback only) ───────────────────────
-    def _yfinance(self, symbol: str, tf: str,
-                  limit: int) -> List[Candle]:
-        try:
-            yf_symbol = self._to_yfinance_symbol(symbol)
-            period    = self._limit_to_period(tf, limit)
-            yf_tf     = self.YFINANCE_TF_MAP.get(tf, '1h')
-
-            ticker = yf.Ticker(yf_symbol)
-            df     = ticker.history(period=period, interval=yf_tf)
-
-            if df.empty:
-                return []
-
-            candles = []
-            for ts, row in df.iterrows():
-                candles.append(Candle(
-                    time  = str(ts),
-                    open  = float(row['Open']),
-                    high  = float(row['High']),
-                    low   = float(row['Low']),
-                    close = float(row['Close']),
-                    volume= float(row.get('Volume', 0))
-                ))
-            return candles[-limit:]
-
         except Exception as e:
-            log.error(f'yfinance fetch error {symbol}: {e}')
+            log.error(f'Yahoo fetch error {symbol}: {e}')
             return []
 
-    def _to_yfinance_symbol(self, symbol: str) -> str:
-        crypto_map = {
-            'BTCUSDT' : 'BTC-USD', 'ETHUSDT' : 'ETH-USD',
-            'SOLUSDT' : 'SOL-USD', 'BNBUSDT' : 'BNB-USD',
-            'XRPUSDT' : 'XRP-USD', 'ADAUSDT' : 'ADA-USD',
-            'DOGEUSDT': 'DOGE-USD','DOTUSDT' : 'DOT-USD',
-            'AVAXUSDT': 'AVAX-USD','LINKUSDT': 'LINK-USD',
-            'LTCUSDT' : 'LTC-USD', 'ATOMUSDT': 'ATOM-USD',
-            'UNIUSDT' : 'UNI-USD', 'ETCUSDT' : 'ETC-USD',
-        }
-        if symbol in crypto_map:
-            return crypto_map[symbol]
-
-        special_map = {
-            'XAUUSD': 'XAUUSD=X', 'XAGUSD': 'XAGUSD=X',
-            'XPTUSD': 'XPTUSD=X', 'XPDUSD': 'XPDUSD=X',
-            'USOIL' : 'CL=F',     'UKOIL' : 'BZ=F',
-        }
-        if symbol in special_map:
-            return special_map[symbol]
-
+    def _to_yahoo_symbol(self, symbol: str) -> str:
+        if symbol in self.YAHOO_SYMBOL_MAP:
+            return self.YAHOO_SYMBOL_MAP[symbol]
         if symbol in self.FOREX_PAIRS:
             return symbol[:3] + symbol[3:] + '=X'
-
-        index_map = {
-            'NIFTY50'  : '^NSEI',   'NIFTY'    : '^NSEI',
-            'BANKNIFTY': '^NSEBANK','SPX'       : '^GSPC',
-            'NDX'      : '^NDX',    'DJI'       : '^DJI',
-            'FTSE'     : '^FTSE',   'DAX'       : '^GDAXI'
-        }
-        return index_map.get(symbol, symbol)
-
-    def _limit_to_period(self, tf: str, limit: int) -> str:
-        period_map = {
-            '1m' :'7d' ,'5m' :'60d','15m':'60d',
-            '30m':'60d','1h' :'730d','4h':'730d',
-            '1d' :'5y' ,'1w' :'10y','1M':'10y'
-        }
-        return period_map.get(tf, '60d')
+        return symbol
 
     def current_price(self, symbol: str) -> float:
         candles = self.fetch(symbol, '1d', limit=1)
@@ -908,7 +868,7 @@ def format_signal(sig: SMCSignal, symbol: str) -> str:
 
     return (
         f'{em} <b>{sig.direction.value} — {symbol.upper()}</b>\n'
-        f'━━━━━━━━━━━���━━━━━━━━━━\n'
+        f'━━━━━━━━━━━━━━━━━━━━━━\n'
         f'📦 <b>Setup:</b>  {sig.block_type}\n'
         f'📈 <b>Trend:</b>  {sig.trend.upper()}\n'
         f'━━━━━━━━━━━━━━━━━━━━━━\n'
