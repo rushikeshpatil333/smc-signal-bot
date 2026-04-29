@@ -127,14 +127,45 @@ class PublicDataFetcher:
     }
 
     FOREX_PAIRS = [
+        # Major Pairs
         'EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD',
-        'USDCHF','NZDUSD','GBPJPY','EURJPY','EURGBP',
-        'AUDJPY','CADJPY','GBPAUD','EURAUD','CHFJPY',
-        'CHFUSD','EURCAD','EURCHF','EURNZD','GBPCAD',
-        'GBPCHF','GBPNZD','NZDCAD','NZDCHF','NZDJPY',
-        'AUDCAD','AUDCHF','AUDNZD','CADCHF','USDHKD',
-        'USDSGD','USDZAR','USDMXN','USDINR','USDCNH',
-        'XAUUSD','XAGUSD'
+        'USDCHF','NZDUSD','USDSGD','USDHKD','USDCNH',
+        'USDZAR','USDMXN','USDINR','USDTHB','USDTRY',
+        'USDNOK','USDSEK','USDDKK','USDPLN','USDHUF',
+        'USDCZK','USDBRL','USDKRW','USDIDR','USDPHP',
+
+        # Euro Crosses
+        'EURJPY','EURGBP','EURAUD','EURCAD','EURCHF',
+        'EURNZD','EURSGD','EURHKD','EURTRY','EURNOK',
+        'EURSEK','EURDKK','EURPLN','EURHUF','EURCZK',
+        'EURMXN','EURZAR',
+
+        # GBP Crosses
+        'GBPJPY','GBPAUD','GBPCAD','GBPCHF','GBPNZD',
+        'GBPSGD','GBPHKD','GBPTRY','GBPNOK','GBPSEK',
+        'GBPZAR','GBPMXN',
+
+        # AUD Crosses
+        'AUDJPY','AUDCAD','AUDCHF','AUDNZD','AUDSGD',
+        'AUDHKD',
+
+        # NZD Crosses
+        'NZDJPY','NZDCAD','NZDCHF','NZDSGD',
+
+        # CAD Crosses
+        'CADJPY','CADCHF','CADSGD',
+
+        # CHF Crosses
+        'CHFJPY','CHFSGD',
+
+        # JPY Crosses
+        'SGDJPY','HKDJPY','NOKJPY','SEKJPY','DKKJPY',
+
+        # Metals
+        'XAUUSD','XAGUSD','XPTUSD','XPDUSD',
+
+        # Oil
+        'USOIL','UKOIL',
     ]
 
     COINGECKO_MAP = {
@@ -183,14 +214,11 @@ class PublicDataFetcher:
         s     = self.normalize(symbol)
         kind  = self.detect_type(s)
         if kind == 'crypto':
-            # 1. Try Binance
             candles = self._binance(s, tf, limit)
             if not candles:
-                # 2. Try CoinGecko
                 log.warning(f'Binance failed for {s}, trying CoinGecko...')
                 candles = self._coingecko(s, tf, limit)
             if not candles:
-                # 3. Try yfinance
                 log.warning(f'CoinGecko failed for {s}, trying yfinance...')
                 candles = self._yfinance(s, tf, limit)
             return candles
@@ -234,9 +262,8 @@ class PublicDataFetcher:
                 return []
 
             days = self.COINGECKO_TF_DAYS.get(tf, 7)
-
-            url = (f'https://api.coingecko.com/api/v3/coins/{coin_id}'
-                   f'/ohlc?vs_currency=usd&days={days}')
+            url  = (f'https://api.coingecko.com/api/v3/coins/{coin_id}'
+                    f'/ohlc?vs_currency=usd&days={days}')
 
             r = requests.get(
                 url, timeout=15,
@@ -315,8 +342,21 @@ class PublicDataFetcher:
         }
         if symbol in crypto_map:
             return crypto_map[symbol]
+
         if symbol in self.FOREX_PAIRS:
+            # Special symbols that are not simple currency pairs
+            special_map = {
+                'XAUUSD': 'GC=F',
+                'XAGUSD': 'SI=F',
+                'XPTUSD': 'PL=F',
+                'XPDUSD': 'PA=F',
+                'USOIL' : 'CL=F',
+                'UKOIL' : 'BZ=F',
+            }
+            if symbol in special_map:
+                return special_map[symbol]
             return symbol[:3] + symbol[3:] + '=X'
+
         index_map = {
             'NIFTY50'  : '^NSEI',
             'NIFTY'    : '^NSEI',
@@ -814,7 +854,7 @@ def format_signal(sig: SMCSignal, symbol: str) -> str:
         f'🛑 <b>Stop Loss:</b>   {sig.stop_loss}\n\n'
         f'🎯 <b>Target 1:</b>    {sig.target_1}\n'
         f'   └ Close 50% here\n'
-        f'🎯 <b>Target 2:</b>    {sig.target_2}\n'
+        f'��� <b>Target 2:</b>    {sig.target_2}\n'
         f'   └ Move SL to breakeven\n'
         f'🎯 <b>Target 3:</b>    {sig.target_3}\n'
         f'   └ Let runner go\n'
@@ -841,19 +881,26 @@ HELP_TEXT = """
 <b>How to use:</b>
 Just send any symbol and I will analyse it.
 
-<b>Crypto Examples:</b>
+<b>Crypto:</b>
   BTCUSDT   ETHUSDT   SOLUSDT
   BNBUSDT   XRPUSDT   ADAUSDT
 
-<b>Forex Examples:</b>
+<b>Forex Majors:</b>
   EURUSD    GBPUSD    USDJPY
-  AUDUSD    CHFJPY    GBPJPY
-  USDCAD    NZDUSD    USDCHF
+  AUDUSD    USDCAD    USDCHF
+
+<b>Forex Crosses:</b>
+  GBPJPY    EURJPY    GBPAUD
+  AUDJPY    CADJPY    CHFJPY
 
 <b>Metals:</b>
-  XAUUSD (Gold)   XAGUSD (Silver)
+  XAUUSD (Gold)    XAGUSD (Silver)
+  XPTUSD (Platinum)
 
-<b>Index Examples:</b>
+<b>Oil:</b>
+  USOIL (WTI)    UKOIL (Brent)
+
+<b>Indices:</b>
   NIFTY50   BANKNIFTY
   SPX       NDX       DAX
 
@@ -904,6 +951,7 @@ async def symbol_handler(update: Update,
                 f'<b>Crypto:</b>  BTCUSDT  ETHUSDT  SOLUSDT\n'
                 f'<b>Forex:</b>   EURUSD   GBPUSD   CHFJPY\n'
                 f'<b>Metals:</b>  XAUUSD   XAGUSD\n'
+                f'<b>Oil:</b>     USOIL    UKOIL\n'
                 f'<b>Index:</b>   NIFTY50  SPX  NDX',
                 parse_mode='HTML'
             )
