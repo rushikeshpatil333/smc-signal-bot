@@ -1,18 +1,5 @@
 """
 SMC On-Demand Signal Bot
-━━━━━━━━━━━━━━━━━━━━━━━━
-Send any symbol to Telegram → get SMC analysis back.
-
-No Binance / Bybit / MT5 account needed.
-Data fetched from PUBLIC endpoints (free, no API key).
-
-Supported formats:
-  BTCUSDT   → Binance public API (crypto)
-  ETHUSDT
-  EURUSD    → yfinance (forex/indices)
-  GBPUSD
-  NIFTY50
-  etc.
 """
 
 import os
@@ -23,11 +10,10 @@ import yfinance as yf
 import concurrent.futures
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict
 from enum import Enum
 from dotenv import load_dotenv
 
-# ── Telegram library ──────────────────────────
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -44,34 +30,22 @@ logging.basicConfig(
 )
 log = logging.getLogger('SMCBot')
 
-# ═══════════════════════════════════════════════
-# CONFIG
-# ═══════════════════════════════════════════════
-
 class Config:
     TELEGRAM_BOT_TOKEN   = os.getenv('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID     = os.getenv('TELEGRAM_CHAT_ID', '')
     HTF                  = '1h'
     LTF                  = '5m'
-    CANDLE_LIMIT         = 100   # reduced for speed
+    CANDLE_LIMIT         = 100
     SWING_LOOKBACK       = 5
     MIN_CONFLUENCE_SCORE = 3
     MIN_RR_RATIO         = 1.2
     SL_BUFFER_PCT        = 0.002
     DISPLACEMENT_MULT    = 1.0
 
-# ═══════════════════════════════════════════════
-# ENUMS
-# ═══════════════════════════════════════════════
-
 class SignalDirection(Enum):
     LONG     = 'LONG'
     SHORT    = 'SHORT'
     NO_TRADE = 'NO TRADE'
-
-# ═══════════════════════════════════════════════
-# DATA STRUCTURES
-# ═══════════════════════════════════════════════
 
 @dataclass
 class Candle:
@@ -89,14 +63,12 @@ class Candle:
     def body_size(self) : return abs(self.close - self.open)
     def range_size(self): return self.high - self.low
 
-
 @dataclass
 class SwingPoint:
     type  : str
     price : float
     index : int
     broken: bool = False
-
 
 @dataclass
 class OrderBlock:
@@ -107,7 +79,6 @@ class OrderBlock:
     index    : int
     status   : str = 'fresh'
 
-
 @dataclass
 class FVG:
     direction: str
@@ -116,7 +87,6 @@ class FVG:
     midpoint : float
     index    : int
     status   : str = 'fresh'
-
 
 @dataclass
 class SMCSignal:
@@ -141,22 +111,19 @@ class SMCSignal:
                 self.rr_ratio  >= Config.MIN_RR_RATIO and
                 self.confluence_score >= Config.MIN_CONFLUENCE_SCORE)
 
-# ═══════════════════════════════════════════════
-# DATA FETCHER (PUBLIC — NO API KEY NEEDED)
-# ═══════════════════════════════════════════════
 
 class PublicDataFetcher:
 
     BINANCE_TF_MAP = {
-        '1m' :'1m' , '3m' :'3m' , '5m' :'5m' , '15m':'15m',
-        '30m':'30m', '1h' :'1h' , '2h' :'2h' , '4h' :'4h' ,
-        '6h' :'6h' , '1d' :'1d' , '1w' :'1w' , '1M' :'1M'
+        '1m':'1m','3m':'3m','5m':'5m','15m':'15m',
+        '30m':'30m','1h':'1h','2h':'2h','4h':'4h',
+        '6h':'6h','1d':'1d','1w':'1w','1M':'1M'
     }
 
     YFINANCE_TF_MAP = {
-        '5m' :'5m' , '15m':'15m', '30m':'30m',
-        '1h' :'1h' , '4h' :'1h' , '1d' :'1d' ,
-        '1w' :'1wk', '1M' :'1mo'
+        '5m':'5m','15m':'15m','30m':'30m',
+        '1h':'1h','4h':'1h','1d':'1d',
+        '1w':'1wk','1M':'1mo'
     }
 
     FOREX_PAIRS = [
@@ -171,12 +138,7 @@ class PublicDataFetcher:
     ]
 
     def detect_type(self, symbol: str) -> str:
-        crypto_endings = ['USDT','BTC','ETH','BNB','BUSD']
-        s = symbol.upper().replace('/', '').replace('-', '')
-        if any(s.endswith(e) for e in crypto_endings):
-            return 'crypto'
-        return 'forex'
-        crypto_endings = ['USDT','BTC','ETH','BNB','BUSD']
+        crypto_endings = ['USDT', 'BTC', 'ETH', 'BNB', 'BUSD']
         s = symbol.upper().replace('/', '').replace('-', '')
         if any(s.endswith(e) for e in crypto_endings):
             return 'crypto'
@@ -188,19 +150,18 @@ class PublicDataFetcher:
                 .replace('-', '')
                 .replace(' ', ''))
 
- def fetch(self, symbol: str, tf: str,
-          limit: int = None) -> List[Candle]:
-    limit = limit or Config.CANDLE_LIMIT
-    s     = self.normalize(symbol)
-    kind  = self.detect_type(s)
-    if kind == 'crypto':
-        # Try Binance first, fallback to yfinance
-        candles = self._binance(s, tf, limit)
-        if not candles:
-            log.warning(f'Binance failed for {s}, trying yfinance...')
-            candles = self._yfinance(s, tf, limit)
-        return candles
-    return self._yfinance(s, tf, limit)
+    def fetch(self, symbol: str, tf: str,
+              limit: int = None) -> List[Candle]:
+        limit = limit or Config.CANDLE_LIMIT
+        s     = self.normalize(symbol)
+        kind  = self.detect_type(s)
+        if kind == 'crypto':
+            candles = self._binance(s, tf, limit)
+            if not candles:
+                log.warning(f'Binance failed for {s}, trying yfinance...')
+                candles = self._yfinance(s, tf, limit)
+            return candles
+        return self._yfinance(s, tf, limit)
 
     def _binance(self, symbol: str, tf: str,
                  limit: int) -> List[Candle]:
@@ -261,7 +222,6 @@ class PublicDataFetcher:
             return []
 
     def _to_yfinance_symbol(self, symbol: str) -> str:
-        # Crypto map (fallback if Binance fails)
         crypto_map = {
             'BTCUSDT' : 'BTC-USD',
             'ETHUSDT' : 'ETH-USD',
@@ -271,37 +231,34 @@ class PublicDataFetcher:
             'ADAUSDT' : 'ADA-USD',
             'DOGEUSDT': 'DOGE-USD',
             'DOTUSDT' : 'DOT-USD',
-            'MATICUSDT':'MATIC-USD',
-            'AVAXUSDT' :'AVAX-USD',
-            'LINKUSDT' :'LINK-USD',
-            'LTCUSDT'  :'LTC-USD',
-            'ATOMUSDT' :'ATOM-USD',
-            'UNIUSDT'  :'UNI-USD',
-            'ETCUSDT'  :'ETC-USD',
+            'AVAXUSDT': 'AVAX-USD',
+            'LINKUSDT': 'LINK-USD',
+            'LTCUSDT' : 'LTC-USD',
+            'ATOMUSDT': 'ATOM-USD',
+            'UNIUSDT' : 'UNI-USD',
+            'ETCUSDT' : 'ETC-USD',
         }
         if symbol in crypto_map:
             return crypto_map[symbol]
-
         if symbol in self.FOREX_PAIRS:
             return symbol[:3] + symbol[3:] + '=X'
-
         index_map = {
-            'NIFTY50'   : '^NSEI'   ,
-            'NIFTY'     : '^NSEI'   ,
-            'BANKNIFTY' : '^NSEBANK',
-            'SPX'       : '^GSPC'   ,
-            'NDX'       : '^NDX'    ,
-            'DJI'       : '^DJI'    ,
-            'FTSE'      : '^FTSE'   ,
-            'DAX'       : '^GDAXI'
+            'NIFTY50'  : '^NSEI',
+            'NIFTY'    : '^NSEI',
+            'BANKNIFTY': '^NSEBANK',
+            'SPX'      : '^GSPC',
+            'NDX'      : '^NDX',
+            'DJI'      : '^DJI',
+            'FTSE'     : '^FTSE',
+            'DAX'      : '^GDAXI'
         }
         return index_map.get(symbol, symbol)
 
     def _limit_to_period(self, tf: str, limit: int) -> str:
         period_map = {
-            '1m' : '7d'  , '5m' : '60d' , '15m': '60d',
-            '30m': '60d' , '1h' : '730d', '4h' : '730d',
-            '1d' : '5y'  , '1w' : '10y' , '1M' : '10y'
+            '1m' :'7d' ,'5m' :'60d','15m':'60d',
+            '30m':'60d','1h' :'730d','4h':'730d',
+            '1d' :'5y' ,'1w' :'10y','1M':'10y'
         }
         return period_map.get(tf, '60d')
 
@@ -309,9 +266,6 @@ class PublicDataFetcher:
         candles = self.fetch(symbol, '1m', limit=1)
         return candles[-1].close if candles else 0.0
 
-# ═══════════════════════════════════════════════
-# SMC ANALYSIS ENGINE
-# ═══════════════════════════════════════════════
 
 class SMCAnalysisEngine:
 
@@ -434,10 +388,7 @@ class SMCAnalysisEngine:
         lows   = sorted(
             [s.price for s in swings if 'low' in s.type or s.type == 'LL']
         )
-        return {
-            'buy_side' : highs[:3],
-            'sell_side': lows[:3]
-        }
+        return {'buy_side': highs[:3], 'sell_side': lows[:3]}
 
     def find_idm(self, candles: List[Candle],
                   direction: str) -> Optional[float]:
@@ -480,7 +431,7 @@ class SMCAnalysisEngine:
             return (trend == 'downtrend' or
                     any(s.type in ['LH', 'LL'] for s in cswings[-6:]))
 
-    def get_bias(self, daily_candles : List[Candle],
+    def get_bias(self, daily_candles: List[Candle],
                   weekly_candles: List[Candle]) -> Dict:
         def candle_bias(c: Candle) -> str:
             if not c: return 'neutral'
@@ -538,9 +489,7 @@ class SMCAnalysisEngine:
 
         cp = htf_candles[-1].close
 
-        swings    = self.classify_structure(
-            self.detect_swings(htf_candles)
-        )
+        swings    = self.classify_structure(self.detect_swings(htf_candles))
         trend     = self.get_trend(swings)
         if trend == 'ranging':
             no.warnings = ['Market ranging — no clear trend']
@@ -573,8 +522,7 @@ class SMCAnalysisEngine:
         fvgs       = self.find_fvgs(htf_candles, direction)
         fresh_fvgs = [f for f in fvgs if f.status == 'fresh']
 
-        liq = self.find_liquidity(htf_candles)
-
+        liq    = self.find_liquidity(htf_candles)
         ltf_ok = self.ltf_choch(ltf_candles, direction)
 
         best_ob = None
@@ -654,9 +602,7 @@ class SMCAnalysisEngine:
             return no
 
         if not ltf_ok:
-            no.warnings = [
-                'Waiting for LTF CHOCH confirmation', *warns
-            ]
+            no.warnings = ['Waiting for LTF CHOCH confirmation', *warns]
             return no
 
         if best_fvg:
@@ -670,11 +616,10 @@ class SMCAnalysisEngine:
             block_type = 'Order Block'
 
         entry = (el + eh) / 2
+        buf   = entry * Config.SL_BUFFER_PCT
+        sl    = el - buf if direction == 'bullish' else eh + buf
+        risk  = abs(entry - sl)
 
-        buf = entry * Config.SL_BUFFER_PCT
-        sl  = el - buf if direction == 'bullish' else eh + buf
-
-        risk = abs(entry - sl)
         if risk == 0:
             no.warnings = ['Invalid SL calculation']
             return no
@@ -695,7 +640,7 @@ class SMCAnalysisEngine:
             no.warnings = [f'RR {rr} below minimum {Config.MIN_RR_RATIO}']
             return no
 
-        sig_dir = (SignalDirection.LONG  if direction == 'bullish'
+        sig_dir = (SignalDirection.LONG if direction == 'bullish'
                    else SignalDirection.SHORT)
 
         return SMCSignal(
@@ -716,9 +661,6 @@ class SMCAnalysisEngine:
             timestamp        = ts
         )
 
-# ═══════════════════════════════════════════════
-# MESSAGE FORMATTER
-# ═══════════════════════════════════════════════
 
 def format_signal(sig: SMCSignal, symbol: str) -> str:
 
@@ -752,23 +694,16 @@ def format_signal(sig: SMCSignal, symbol: str) -> str:
             f'     (higher highs + higher lows)\n'
             f'  🔍 Look for Bullish OB or FVG near:\n'
             f'     {sig.entry_low} – {sig.entry_high}\n'
-            f'  🔍 Price should be in DISCOUNT zone\n'
-            f'     (lower half of recent range)\n\n'
+            f'  🔍 Price should be in DISCOUNT zone\n\n'
             f'<b>Step 2 → Open 1D Chart (Daily)</b>\n'
             f'  🔍 Daily candle should be BULLISH\n'
-            f'     (green candle or closing higher)\n'
             f'  🔍 Price should be BELOW daily open\n'
             f'  🔍 Weekly candle should be BULLISH\n\n'
             f'<b>Step 3 → Open 5M Chart</b>\n'
             f'  🔍 Look for a recent LOW sweep\n'
-            f'     (wick below swing low then close back up)\n'
             f'  🔍 CHOCH UP should be visible\n'
-            f'     (price broke a short term high)\n'
-            f'  🔍 Price near or inside entry zone:\n'
+            f'  🔍 Price near entry zone:\n'
             f'     {sig.entry_low} – {sig.entry_high}\n\n'
-            f'<b>Step 4 → Check Targets on Chart</b>\n'
-            f'  🎯 T1 {sig.target_1} — swing high here?\n'
-            f'  🎯 T2 {sig.target_2} — liquidity here?\n\n'
             f'<b>✅ All steps match → Take the trade</b>\n'
             f'<b>❌ Any step conflicts → Skip this trade</b>'
         )
@@ -781,23 +716,16 @@ def format_signal(sig: SMCSignal, symbol: str) -> str:
             f'     (lower highs + lower lows)\n'
             f'  🔍 Look for Bearish OB or FVG near:\n'
             f'     {sig.entry_low} – {sig.entry_high}\n'
-            f'  🔍 Price should be in PREMIUM zone\n'
-            f'     (upper half of recent range)\n\n'
+            f'  🔍 Price should be in PREMIUM zone\n\n'
             f'<b>Step 2 → Open 1D Chart (Daily)</b>\n'
             f'  🔍 Daily candle should be BEARISH\n'
-            f'     (red candle or closing lower)\n'
             f'  🔍 Price should be ABOVE daily open\n'
             f'  🔍 Weekly candle should be BEARISH\n\n'
             f'<b>Step 3 → Open 5M Chart</b>\n'
             f'  🔍 Look for a recent HIGH sweep\n'
-            f'     (wick above swing high then close back down)\n'
             f'  🔍 CHOCH DOWN should be visible\n'
-            f'     (price broke a short term low)\n'
-            f'  🔍 Price near or inside entry zone:\n'
+            f'  🔍 Price near entry zone:\n'
             f'     {sig.entry_low} – {sig.entry_high}\n\n'
-            f'<b>Step 4 → Check Targets on Chart</b>\n'
-            f'  🎯 T1 {sig.target_1} — swing low here?\n'
-            f'  🎯 T2 {sig.target_2} — liquidity here?\n\n'
             f'<b>✅ All steps match → Take the trade</b>\n'
             f'<b>❌ Any step conflicts → Skip this trade</b>'
         )
@@ -829,9 +757,6 @@ def format_signal(sig: SMCSignal, symbol: str) -> str:
         f'⏰ {sig.timestamp}'
     )
 
-# ═══════════════════════════════════════════════
-# TELEGRAM HANDLERS
-# ═══════════════════════════════════════════════
 
 fetcher = PublicDataFetcher()
 engine  = SMCAnalysisEngine()
@@ -862,17 +787,6 @@ Just send any symbol and I will analyse it.
 <b>Commands:</b>
   /start — show this message
   /help  — show this message
-
-<b>What you get:</b>
-  ✅ Trend direction
-  ✅ Order Block + FVG zone
-  ✅ Entry zone (exact prices)
-  ✅ Stop loss level
-  ✅ 3 profit targets
-  ✅ RR ratio
-  ✅ Confluence score
-  ✅ Bias check
-  ✅ Step by step verification guide
 """
 
 
@@ -895,13 +809,11 @@ async def symbol_handler(update: Update,
 
     loading = await update.message.reply_text(
         f'🔍 Analysing <b>{symbol}</b>...\n'
-        f'⏳ Fetching 4 timeframes simultaneously...\n'
-        f'📡 Please wait 5-10 seconds...',
+        f'⏳ Please wait 5-10 seconds...',
         parse_mode='HTML'
     )
 
     try:
-        # ─��� Parallel fetch — all 4 timeframes at once ──
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
             f_htf    = ex.submit(fetcher.fetch, symbol, Config.HTF, 200)
             f_ltf    = ex.submit(fetcher.fetch, symbol, Config.LTF, 100)
@@ -924,16 +836,13 @@ async def symbol_handler(update: Update,
             )
             return
 
-        signal = engine.analyse(
+        signal  = engine.analyse(
             symbol, htf_candles, ltf_candles,
             daily_candles, weekly_candles
         )
-
         elapsed = round(time.time() - start_time, 1)
         msg     = format_signal(signal, symbol)
-
-        # Add elapsed time to end of message
-        msg += f'\n⚡ <i>Analysis completed in {elapsed}s</i>'
+        msg    += f'\n⚡ <i>Analysis completed in {elapsed}s</i>'
 
         await loading.edit_text(msg, parse_mode='HTML')
 
@@ -948,13 +857,10 @@ async def symbol_handler(update: Update,
     except Exception as e:
         log.error(f'Error analysing {symbol}: {e}')
         await loading.edit_text(
-            f'❌ Error analysing {symbol}\n{str(e)[:100]}',
+            f'❌ Error analysing {symbol}\n{str(e)[:200]}',
             parse_mode='HTML'
         )
 
-# ═══════════════════════════════════════════════
-# MAIN
-# ═══════════════════════════════════════════════
 
 def main():
     token = Config.TELEGRAM_BOT_TOKEN
