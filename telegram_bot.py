@@ -127,43 +127,34 @@ class PublicDataFetcher:
     }
 
     FOREX_PAIRS = [
-        # Major Pairs
+        # Majors
         'EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD',
         'USDCHF','NZDUSD','USDSGD','USDHKD','USDCNH',
         'USDZAR','USDMXN','USDINR','USDTHB','USDTRY',
         'USDNOK','USDSEK','USDDKK','USDPLN','USDHUF',
         'USDCZK','USDBRL','USDKRW','USDIDR','USDPHP',
-
         # Euro Crosses
         'EURJPY','EURGBP','EURAUD','EURCAD','EURCHF',
         'EURNZD','EURSGD','EURHKD','EURTRY','EURNOK',
         'EURSEK','EURDKK','EURPLN','EURHUF','EURCZK',
         'EURMXN','EURZAR',
-
         # GBP Crosses
         'GBPJPY','GBPAUD','GBPCAD','GBPCHF','GBPNZD',
         'GBPSGD','GBPHKD','GBPTRY','GBPNOK','GBPSEK',
         'GBPZAR','GBPMXN',
-
         # AUD Crosses
         'AUDJPY','AUDCAD','AUDCHF','AUDNZD','AUDSGD',
         'AUDHKD',
-
         # NZD Crosses
         'NZDJPY','NZDCAD','NZDCHF','NZDSGD',
-
         # CAD Crosses
         'CADJPY','CADCHF','CADSGD',
-
         # CHF Crosses
         'CHFJPY','CHFSGD',
-
         # JPY Crosses
         'SGDJPY','HKDJPY','NOKJPY','SEKJPY','DKKJPY',
-
         # Metals
         'XAUUSD','XAGUSD','XPTUSD','XPDUSD',
-
         # Oil
         'USOIL','UKOIL',
     ]
@@ -343,18 +334,19 @@ class PublicDataFetcher:
         if symbol in crypto_map:
             return crypto_map[symbol]
 
+        # Special symbols — metals and oil
+        special_map = {
+            'XAUUSD': 'XAUUSD=X',   # Gold   ✅
+            'XAGUSD': 'XAGUSD=X',   # Silver ✅
+            'XPTUSD': 'XPTUSD=X',   # Platinum
+            'XPDUSD': 'XPDUSD=X',   # Palladium
+            'USOIL' : 'CL=F',       # WTI Oil
+            'UKOIL' : 'BZ=F',       # Brent Oil
+        }
+        if symbol in special_map:
+            return special_map[symbol]
+
         if symbol in self.FOREX_PAIRS:
-            # Special symbols that are not simple currency pairs
-            special_map = {
-                'XAUUSD': 'GC=F',
-                'XAGUSD': 'SI=F',
-                'XPTUSD': 'PL=F',
-                'XPDUSD': 'PA=F',
-                'USOIL' : 'CL=F',
-                'UKOIL' : 'BZ=F',
-            }
-            if symbol in special_map:
-                return special_map[symbol]
             return symbol[:3] + symbol[3:] + '=X'
 
         index_map = {
@@ -854,7 +846,7 @@ def format_signal(sig: SMCSignal, symbol: str) -> str:
         f'🛑 <b>Stop Loss:</b>   {sig.stop_loss}\n\n'
         f'🎯 <b>Target 1:</b>    {sig.target_1}\n'
         f'   └ Close 50% here\n'
-        f'��� <b>Target 2:</b>    {sig.target_2}\n'
+        f'🎯 <b>Target 2:</b>    {sig.target_2}\n'
         f'   └ Move SL to breakeven\n'
         f'🎯 <b>Target 3:</b>    {sig.target_3}\n'
         f'   └ Let runner go\n'
@@ -894,11 +886,11 @@ Just send any symbol and I will analyse it.
   AUDJPY    CADJPY    CHFJPY
 
 <b>Metals:</b>
-  XAUUSD (Gold)    XAGUSD (Silver)
-  XPTUSD (Platinum)
+  XAUUSD (Gold)      XAGUSD (Silver)
+  XPTUSD (Platinum)  XPDUSD (Palladium)
 
 <b>Oil:</b>
-  USOIL (WTI)    UKOIL (Brent)
+  USOIL (WTI Crude)  UKOIL (Brent)
 
 <b>Indices:</b>
   NIFTY50   BANKNIFTY
