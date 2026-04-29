@@ -3,6 +3,7 @@ SMC On-Demand Signal Bot
 """
 
 import os
+import io
 import time
 import logging
 import requests
@@ -126,6 +127,12 @@ class PublicDataFetcher:
         '1w':'1wk','1M':'1mo'
     }
 
+    STOOQ_TF_MAP = {
+        '5m' :'5', '15m':'5', '30m':'5',
+        '1h' :'h', '4h' :'h', '1d' :'d',
+        '1w' :'w', '1M' :'m'
+    }
+
     FOREX_PAIRS = [
         # Majors
         'EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD',
@@ -177,13 +184,9 @@ class PublicDataFetcher:
     }
 
     COINGECKO_TF_DAYS = {
-        '5m' : 1,
-        '15m': 1,
-        '30m': 2,
-        '1h' : 7,
-        '4h' : 30,
-        '1d' : 365,
-        '1w' : 365,
+        '5m' : 1, '15m': 1, '30m': 2,
+        '1h' : 7, '4h' : 30,
+        '1d' : 365, '1w': 365,
     }
 
     def detect_type(self, symbol: str) -> str:
@@ -199,11 +202,14 @@ class PublicDataFetcher:
                 .replace('-', '')
                 .replace(' ', ''))
 
+    # ── Main fetch — crypto: Binance→CoinGecko→yfinance
+    #               forex:  Stooq→yfinance ──────────────
     def fetch(self, symbol: str, tf: str,
               limit: int = None) -> List[Candle]:
         limit = limit or Config.CANDLE_LIMIT
         s     = self.normalize(symbol)
         kind  = self.detect_type(s)
+
         if kind == 'crypto':
             candles = self._binance(s, tf, limit)
             if not candles:
@@ -213,8 +219,15 @@ class PublicDataFetcher:
                 log.warning(f'CoinGecko failed for {s}, trying yfinance...')
                 candles = self._yfinance(s, tf, limit)
             return candles
-        return self._yfinance(s, tf, limit)
 
+        # Forex / Metals / Oil / Indices
+        candles = self._stooq(s, tf, limit)
+        if not candles:
+            log.warning(f'Stooq failed for {s}, trying yfinance...')
+            candles = self._yfinance(s, tf, limit)
+        return candles
+
+    # ── Binance ───────────────────────────────────────
     def _binance(self, symbol: str, tf: str,
                  limit: int) -> List[Candle]:
         try:
@@ -244,6 +257,7 @@ class PublicDataFetcher:
             log.error(f'Binance fetch error: {e}')
             return []
 
+    # ── CoinGecko ─────────────────────────────────────
     def _coingecko(self, symbol: str, tf: str,
                    limit: int) -> List[Candle]:
         try:
@@ -256,10 +270,8 @@ class PublicDataFetcher:
             url  = (f'https://api.coingecko.com/api/v3/coins/{coin_id}'
                     f'/ohlc?vs_currency=usd&days={days}')
 
-            r = requests.get(
-                url, timeout=15,
-                headers={'User-Agent': 'Mozilla/5.0'}
-            )
+            r = requests.get(url, timeout=15,
+                             headers={'User-Agent': 'Mozilla/5.0'})
             if r.status_code != 200:
                 log.error(f'CoinGecko error {r.status_code}: {r.text[:100]}')
                 return []
@@ -285,6 +297,80 @@ class PublicDataFetcher:
             log.error(f'CoinGecko fetch error: {e}')
             return []
 
+    # ── Stooq (primary for forex/metals/indices) ──────
+    def _stooq(self, symbol: str, tf: str,
+               limit: int) -> List[Candle]:
+        try:
+            stooq_symbol = self._to_stooq_symbol(symbol)
+            interval     = self.STOOQ_TF_MAP.get(tf, 'd')
+            url          = (f'https://stooq.com/q/d/l/'
+                            f'?s={stooq_symbol}&i={interval}')
+
+            r = requests.get(url, timeout=15,
+                             headers={'User-Agent': 'Mozilla/5.0'})
+            if r.status_code != 200:
+                log.error(f'Stooq error {r.status_code} for {symbol}')
+                return []
+
+            text = r.text.strip()
+            if not text or 'No data' in text or len(text) < 30:
+                log.error(f'Stooq no data for {symbol}')
+                return []
+
+            lines   = text.split('\n')
+            candles = []
+            for line in lines[1:]:      # skip header row
+                parts = line.strip().split(',')
+                if len(parts) < 5:
+                    continue
+                try:
+                    candles.append(Candle(
+                        time  = parts[0],
+                        open  = float(parts[1]),
+                        high  = float(parts[2]),
+                        low   = float(parts[3]),
+                        close = float(parts[4]),
+                        volume= float(parts[5]) if len(parts) > 5 else 0.0
+                    ))
+                except Exception:
+                    continue
+
+            candles.sort(key=lambda x: x.time)
+            result = candles[-limit:] if candles else []
+            if result:
+                log.info(f'Stooq OK for {symbol}: {len(result)} candles')
+            return result
+
+        except Exception as e:
+            log.error(f'Stooq fetch error {symbol}: {e}')
+            return []
+
+    def _to_stooq_symbol(self, symbol: str) -> str:
+        special = {
+            # Metals
+            'XAUUSD'   : 'xauusd',
+            'XAGUSD'   : 'xagusd',
+            'XPTUSD'   : 'xptusd',
+            'XPDUSD'   : 'xpdusd',
+            # Oil
+            'USOIL'    : 'cl.f',
+            'UKOIL'    : 'lcox.uk',
+            # Indices
+            'NIFTY50'  : '^nsei',
+            'NIFTY'    : '^nsei',
+            'BANKNIFTY': '^nsebank',
+            'SPX'      : '^spx',
+            'NDX'      : '^ndx',
+            'DJI'      : '^dji',
+            'FTSE'     : '^fta',
+            'DAX'      : '^dax',
+        }
+        if symbol in special:
+            return special[symbol]
+        # Forex pairs → lowercase e.g. EURUSD → eurusd
+        return symbol.lower()
+
+    # ── yfinance (fallback only) ───────────────────────
     def _yfinance(self, symbol: str, tf: str,
                   limit: int) -> List[Candle]:
         try:
@@ -316,32 +402,21 @@ class PublicDataFetcher:
 
     def _to_yfinance_symbol(self, symbol: str) -> str:
         crypto_map = {
-            'BTCUSDT' : 'BTC-USD',
-            'ETHUSDT' : 'ETH-USD',
-            'SOLUSDT' : 'SOL-USD',
-            'BNBUSDT' : 'BNB-USD',
-            'XRPUSDT' : 'XRP-USD',
-            'ADAUSDT' : 'ADA-USD',
-            'DOGEUSDT': 'DOGE-USD',
-            'DOTUSDT' : 'DOT-USD',
-            'AVAXUSDT': 'AVAX-USD',
-            'LINKUSDT': 'LINK-USD',
-            'LTCUSDT' : 'LTC-USD',
-            'ATOMUSDT': 'ATOM-USD',
-            'UNIUSDT' : 'UNI-USD',
-            'ETCUSDT' : 'ETC-USD',
+            'BTCUSDT' : 'BTC-USD', 'ETHUSDT' : 'ETH-USD',
+            'SOLUSDT' : 'SOL-USD', 'BNBUSDT' : 'BNB-USD',
+            'XRPUSDT' : 'XRP-USD', 'ADAUSDT' : 'ADA-USD',
+            'DOGEUSDT': 'DOGE-USD','DOTUSDT' : 'DOT-USD',
+            'AVAXUSDT': 'AVAX-USD','LINKUSDT': 'LINK-USD',
+            'LTCUSDT' : 'LTC-USD', 'ATOMUSDT': 'ATOM-USD',
+            'UNIUSDT' : 'UNI-USD', 'ETCUSDT' : 'ETC-USD',
         }
         if symbol in crypto_map:
             return crypto_map[symbol]
 
-        # Special symbols — metals and oil
         special_map = {
-            'XAUUSD': 'XAUUSD=X',   # Gold   ✅
-            'XAGUSD': 'XAGUSD=X',   # Silver ✅
-            'XPTUSD': 'XPTUSD=X',   # Platinum
-            'XPDUSD': 'XPDUSD=X',   # Palladium
-            'USOIL' : 'CL=F',       # WTI Oil
-            'UKOIL' : 'BZ=F',       # Brent Oil
+            'XAUUSD': 'XAUUSD=X', 'XAGUSD': 'XAGUSD=X',
+            'XPTUSD': 'XPTUSD=X', 'XPDUSD': 'XPDUSD=X',
+            'USOIL' : 'CL=F',     'UKOIL' : 'BZ=F',
         }
         if symbol in special_map:
             return special_map[symbol]
@@ -350,27 +425,23 @@ class PublicDataFetcher:
             return symbol[:3] + symbol[3:] + '=X'
 
         index_map = {
-            'NIFTY50'  : '^NSEI',
-            'NIFTY'    : '^NSEI',
-            'BANKNIFTY': '^NSEBANK',
-            'SPX'      : '^GSPC',
-            'NDX'      : '^NDX',
-            'DJI'      : '^DJI',
-            'FTSE'     : '^FTSE',
-            'DAX'      : '^GDAXI'
+            'NIFTY50'  : '^NSEI',   'NIFTY'    : '^NSEI',
+            'BANKNIFTY': '^NSEBANK','SPX'       : '^GSPC',
+            'NDX'      : '^NDX',    'DJI'       : '^DJI',
+            'FTSE'     : '^FTSE',   'DAX'       : '^GDAXI'
         }
         return index_map.get(symbol, symbol)
 
     def _limit_to_period(self, tf: str, limit: int) -> str:
         period_map = {
             '1m' :'7d' ,'5m' :'60d','15m':'60d',
-            '30m':'60d','1h' :'730d','4h' :'730d',
-            '1d' :'5y' ,'1w' :'10y','1M' :'10y'
+            '30m':'60d','1h' :'730d','4h':'730d',
+            '1d' :'5y' ,'1w' :'10y','1M':'10y'
         }
         return period_map.get(tf, '60d')
 
     def current_price(self, symbol: str) -> float:
-        candles = self.fetch(symbol, '1m', limit=1)
+        candles = self.fetch(symbol, '1d', limit=1)
         return candles[-1].close if candles else 0.0
 
 
@@ -837,7 +908,7 @@ def format_signal(sig: SMCSignal, symbol: str) -> str:
 
     return (
         f'{em} <b>{sig.direction.value} — {symbol.upper()}</b>\n'
-        f'━━━━━━━━━━━━━━━━━━━━━━\n'
+        f'━━━━━━━━━━━���━━━━━━━━━━\n'
         f'📦 <b>Setup:</b>  {sig.block_type}\n'
         f'📈 <b>Trend:</b>  {sig.trend.upper()}\n'
         f'━━━━━━━━━━━━━━━━━━━━━━\n'
