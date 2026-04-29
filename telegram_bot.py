@@ -171,7 +171,11 @@ class PublicDataFetcher:
     ]
 
     def detect_type(self, symbol: str) -> str:
-    return 'forex'  # force all through yfinance
+        crypto_endings = ['USDT','BTC','ETH','BNB','BUSD']
+        s = symbol.upper().replace('/', '').replace('-', '')
+        if any(s.endswith(e) for e in crypto_endings):
+            return 'crypto'
+        return 'forex'
         crypto_endings = ['USDT','BTC','ETH','BNB','BUSD']
         s = symbol.upper().replace('/', '').replace('-', '')
         if any(s.endswith(e) for e in crypto_endings):
