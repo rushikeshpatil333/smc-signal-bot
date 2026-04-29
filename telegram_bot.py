@@ -183,14 +183,19 @@ class PublicDataFetcher:
                 .replace('-', '')
                 .replace(' ', ''))
 
-    def fetch(self, symbol: str, tf: str,
-              limit: int = None) -> List[Candle]:
-        limit = limit or Config.CANDLE_LIMIT
-        s     = self.normalize(symbol)
-        kind  = self.detect_type(s)
-        if kind == 'crypto':
-            return self._binance(s, tf, limit)
-        return self._yfinance(s, tf, limit)
+ def fetch(self, symbol: str, tf: str,
+          limit: int = None) -> List[Candle]:
+    limit = limit or Config.CANDLE_LIMIT
+    s     = self.normalize(symbol)
+    kind  = self.detect_type(s)
+    if kind == 'crypto':
+        # Try Binance first, fallback to yfinance
+        candles = self._binance(s, tf, limit)
+        if not candles:
+            log.warning(f'Binance failed for {s}, trying yfinance...')
+            candles = self._yfinance(s, tf, limit)
+        return candles
+    return self._yfinance(s, tf, limit)
 
     def _binance(self, symbol: str, tf: str,
                  limit: int) -> List[Candle]:
