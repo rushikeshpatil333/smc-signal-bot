@@ -1,6 +1,6 @@
 """
-SMC On-Demand Signal Bot — v3.1
-Crypto: 24/7 scanning | Forex: London/NY only
+SMC On-Demand Signal Bot — v3.2
+Crypto: 24/7 | Forex: London/NY | Balanced thresholds
 """
 
 import os
@@ -63,7 +63,7 @@ ALL_SCAN_PAIRS = CRYPTO_PAIRS + FOREX_PAIRS_SCAN
 
 
 # ═══════════════════════════════════════════════════
-#  CONFIG
+#  CONFIG  ← KEY CHANGES HERE
 # ═══════════════════════════════════════════════════
 class Config:
     TELEGRAM_BOT_TOKEN   = os.getenv('TELEGRAM_BOT_TOKEN', '')
@@ -72,33 +72,33 @@ class Config:
     LTF                  = '5m'
     CANDLE_LIMIT         = 100
     SWING_LOOKBACK       = 5
-    MIN_CONFLUENCE_SCORE = 5
-    MIN_RR_RATIO         = 2.0
+    MIN_CONFLUENCE_SCORE = 4      # relaxed: was 5
+    MIN_RR_RATIO         = 1.8    # relaxed: was 2.0
     SL_BUFFER_PCT        = 0.002
     DISPLACEMENT_MULT    = 1.0
 
-    # Auto alert thresholds (stricter than manual)
-    ALERT_MIN_SCORE      = 7
-    ALERT_MIN_RR         = 2.5
+    # Auto alert thresholds
+    ALERT_MIN_SCORE      = 6      # relaxed: was 7
+    ALERT_MIN_RR         = 2.0    # relaxed: was 2.5
     ALERT_COOLDOWN_HOURS = 4
     SCAN_INTERVAL_MINS   = 30
 
     SYMBOL_SETTINGS: Dict = {
         'XAUUSD': {
-            'min_score'    : 6,
-            'min_rr'       : 2.0,
+            'min_score'    : 5,    # relaxed: was 6
+            'min_rr'       : 1.8,  # relaxed: was 2.0
             'sl_buffer_pct': 0.005,
             'session_only' : 'london',
         },
         'GBPUSD': {
-            'min_score'    : 5,
-            'min_rr'       : 2.0,
+            'min_score'    : 4,
+            'min_rr'       : 1.8,
             'sl_buffer_pct': 0.002,
             'session_only' : 'any',
         },
         'USDCAD': {
-            'min_score'    : 5,
-            'min_rr'       : 2.0,
+            'min_score'    : 4,
+            'min_rr'       : 1.8,
             'sl_buffer_pct': 0.002,
             'session_only' : 'any',
             'check_oil'    : True,
@@ -167,14 +167,10 @@ class SessionFilter:
         return 'dead'
 
     @staticmethod
-    def is_active_session() -> bool:
-        return SessionFilter.current_session() != 'dead'
-
-    @staticmethod
     def is_session_ok(session_only: str) -> bool:
         sess = SessionFilter.current_session()
         if session_only == 'london':
-            return sess in ['london_open', 'london', 'overlap']
+            return sess in ['london_open','london','overlap']
         return sess != 'dead'
 
     @staticmethod
@@ -196,19 +192,15 @@ class SessionFilter:
 
     @classmethod
     def check(cls, symbol: str, is_crypto: bool = False) -> Optional[str]:
-        """
-        Crypto  → only block during news time (24/7 market)
-        Forex   → block dead session + news time
-        """
-        # ── Crypto: only news filter ──────────────────
+        # Crypto = 24/7, only block during major news
         if is_crypto:
             if cls.is_news_time():
                 return ('⚠️ HIGH IMPACT NEWS TIME\n'
-                        '   Avoid ±30 min around news.\n'
-                        '   Even crypto reacts to US/Fed news.')
-            return None   # crypto is fine 24/7
+                        '   Crypto also reacts to Fed/US news.\n'
+                        '   Avoid ±30 min around news.')
+            return None
 
-        # ── Forex/Metals/Oil ──────────────────────────
+        # Forex / Metals / Oil
         cfg = Config.for_symbol(symbol)
         if cls.is_news_time():
             return ('⚠️ HIGH IMPACT NEWS TIME\n'
@@ -310,7 +302,7 @@ class PublicDataFetcher:
         '1h':'2y','4h':'2y','1d':'5y',
         '1w':'10y','1M':'10y'
     }
-    FOREX_PAIRS = [
+    ALL_FOREX_PAIRS = [
         'EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD',
         'USDCHF','NZDUSD','USDSGD','USDHKD','USDCNH',
         'USDZAR','USDMXN','USDINR','USDTHB','USDTRY',
@@ -373,10 +365,10 @@ class PublicDataFetcher:
         limit = limit or Config.CANDLE_LIMIT
         s     = self.normalize(symbol)
         if self.detect_type(s) == 'crypto':
-            return (self._binance(s, tf, limit) or
-                    self._coingecko(s, tf, limit) or
-                    self._yahoo(s, tf, limit))
-        return self._yahoo(s, tf, limit)
+            return (self._binance(s,tf,limit) or
+                    self._coingecko(s,tf,limit) or
+                    self._yahoo(s,tf,limit))
+        return self._yahoo(s,tf,limit)
 
     def _binance(self, symbol, tf, limit):
         try:
@@ -390,13 +382,13 @@ class PublicDataFetcher:
             if r.status_code != 200: return []
             return [Candle(
                 time  = str(datetime.fromtimestamp(
-                    row[0]/1000, tz=timezone.utc)),
+                    row[0]/1000,tz=timezone.utc)),
                 open=float(row[1]),high=float(row[2]),
                 low =float(row[3]),close=float(row[4]),
                 volume=float(row[5])
             ) for row in r.json()]
         except Exception as e:
-            log.error(f'Binance error: {e}'); return []
+            log.error(f'Binance: {e}'); return []
 
     def _coingecko(self, symbol, tf, limit):
         try:
@@ -406,19 +398,19 @@ class PublicDataFetcher:
                 f'https://api.coingecko.com/api/v3/coins/{coin_id}'
                 f'/ohlc?vs_currency=usd&days='
                 f'{self.COINGECKO_TF_DAYS.get(tf,"7")}',
-                headers={'User-Agent':'Mozilla/5.0'}, timeout=15
+                headers={'User-Agent':'Mozilla/5.0'},timeout=15
             )
             if r.status_code != 200: return []
             data = r.json()
             if not data: return []
             return [Candle(
                 time  = str(datetime.fromtimestamp(
-                    row[0]/1000, tz=timezone.utc)),
+                    row[0]/1000,tz=timezone.utc)),
                 open=float(row[1]),high=float(row[2]),
                 low =float(row[3]),close=float(row[4]),volume=0.0
             ) for row in data][-limit:]
         except Exception as e:
-            log.error(f'CoinGecko error: {e}'); return []
+            log.error(f'CoinGecko: {e}'); return []
 
     def _yahoo(self, symbol, tf, limit):
         try:
@@ -435,7 +427,7 @@ class PublicDataFetcher:
                     r = requests.get(
                         f'https://{host}.finance.yahoo.com/v8/finance/chart/'
                         f'{yf_sym}?interval={interval}&range={range_}',
-                        headers=headers, timeout=15
+                        headers=headers,timeout=15
                     )
                     if r.status_code != 200: continue
                     res = r.json().get('chart',{}).get('result',[])
@@ -445,33 +437,32 @@ class PublicDataFetcher:
                     q       = res['indicators']['quote'][0]
                     vols    = q.get('volume') or [0]*len(ts_list)
                     candles = []
-                    for i, ts in enumerate(ts_list):
+                    for i,ts in enumerate(ts_list):
                         try:
-                            o,h,l,c = (q['open'][i],q['high'][i],
-                                       q['low'][i], q['close'][i])
+                            o,h,l,c=(q['open'][i],q['high'][i],
+                                     q['low'][i], q['close'][i])
                             if None in (o,h,l,c): continue
                             candles.append(Candle(
-                                time  = str(datetime.fromtimestamp(
-                                    ts, tz=timezone.utc)),
+                                time=str(datetime.fromtimestamp(
+                                    ts,tz=timezone.utc)),
                                 open=float(o),high=float(h),
                                 low =float(l),close=float(c),
                                 volume=float(vols[i] or 0)
                             ))
                         except Exception:
                             continue
-                    if candles:
-                        return candles[-limit:]
+                    if candles: return candles[-limit:]
                 except Exception as e:
                     log.error(f'Yahoo {host}: {e}')
             return []
         except Exception as e:
-            log.error(f'Yahoo error {symbol}: {e}'); return []
+            log.error(f'Yahoo {symbol}: {e}'); return []
 
     def _to_yahoo_symbol(self, symbol):
         if symbol in self.YAHOO_SYMBOL_MAP:
             return self.YAHOO_SYMBOL_MAP[symbol]
-        if symbol in self.FOREX_PAIRS:
-            return symbol[:3] + symbol[3:] + '=X'
+        if symbol in self.ALL_FOREX_PAIRS:
+            return symbol[:3]+symbol[3:]+'=X'
         return symbol
 
     def get_oil_bias(self) -> str:
@@ -485,14 +476,14 @@ class PublicDataFetcher:
 
 
 # ═══════════════════════════════════════════════════
-#  SMC ENGINE
+#  SMC ENGINE  ← MTF IS BONUS, NOT BLOCKER
 # ═══════════════════════════════════════════════════
 class SMCAnalysisEngine:
 
     def detect_swings(self, candles, lb=None):
         lb  = lb or Config.SWING_LOOKBACK
         pts = []
-        for i in range(lb, len(candles)-lb):
+        for i in range(lb,len(candles)-lb):
             c = candles[i]
             if all(c.high>candles[i-k].high and c.high>candles[i+k].high
                    for k in range(1,lb+1)):
@@ -500,7 +491,7 @@ class SMCAnalysisEngine:
             if all(c.low<candles[i-k].low and c.low<candles[i+k].low
                    for k in range(1,lb+1)):
                 pts.append(SwingPoint('swing_low',c.low,i))
-        return sorted(pts, key=lambda x: x.index)
+        return sorted(pts,key=lambda x:x.index)
 
     def classify_structure(self, swings):
         result=[]; ph=pl=None
@@ -536,7 +527,8 @@ class SMCAnalysisEngine:
              for i in range(1,len(candles))]
         return sum(trs[-period:])/period
 
-    def is_high_volatility(self, candles, mult=2.0):
+    def is_high_volatility(self, candles, mult=2.5):
+        # raised mult from 2.0 to 2.5 — less aggressive blocking
         atr=self.get_atr(candles)
         return atr>0 and candles[-1].range_size()>atr*mult
 
@@ -647,9 +639,9 @@ class SMCAnalysisEngine:
         ts   = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
         cfg  = Config.for_symbol(symbol)
         sess = SessionFilter.current_session()
-        no   = SMCSignal(SignalDirection.NO_TRADE, symbol,
+        no   = SMCSignal(SignalDirection.NO_TRADE,symbol,
                          0,0,0,0,0,0,0,0,'ranging','none',
-                         session=sess, timestamp=ts)
+                         session=sess,timestamp=ts)
 
         if len(htf)<50 or len(ltf)<30:
             no.warnings=['Insufficient candle data']; return no
@@ -702,34 +694,64 @@ class SMCAnalysisEngine:
 
         best_fvg=None
         for fvg in reversed(fresh_fg):
-            if fvg.zone_low<=best_ob.zone_high and fvg.zone_high>=best_ob.zone_low:
+            if (fvg.zone_low<=best_ob.zone_high and
+                    fvg.zone_high>=best_ob.zone_low):
                 best_fvg=fvg; break
 
+        # ── SCORING (max 10) ──────────────────────────
+        # MTF is BONUS points only — NOT a hard blocker
         score=0; reasons=[]
+
+        # 1. HTF trend (required)
         score+=1; reasons.append(f'HTF {trend}')
+
+        # 2. Trend strength
         if t_str>=2:
             score+=1; reasons.append(f'Strong trend ({t_str}/3)')
         else:
             warns.append(f'Weak trend ({t_str}/3)')
+
+        # 3. MTF alignment — BONUS only, not blocker
         if mtf_ok:
             score+=2; reasons.append('All 3 TFs aligned ✅')
         else:
-            warns.append('MTF not fully aligned')
+            # partial credit if at least 2 TFs agree
+            def tr(c):
+                if len(c)<10: return 'ranging'
+                return self.get_trend(
+                    self.classify_structure(self.detect_swings(c)))
+            tfs=[tr(htf),tr(daily),tr(weekly)]
+            exp='uptrend' if direction=='bullish' else 'downtrend'
+            matching=tfs.count(exp)
+            if matching>=2:
+                score+=1; reasons.append(f'2/3 TFs aligned')
+            else:
+                warns.append('MTF not aligned (warning only)')
+
+        # 4. Correct location
         if loc_ok:
             score+=1; reasons.append(f'Location: {location}')
         else:
             warns.append(f'Location {location} not ideal')
+
+        # 5. IDM swept
         if idm_sw:
             score+=1; reasons.append(f'IDM swept @ {idm_lv:.5f}')
+
+        # 6. FVG present
         if best_fvg:
             score+=1; reasons.append(
                 f'FVG {best_fvg.zone_low:.5f}–{best_fvg.zone_high:.5f}')
         else:
             warns.append('No FVG at OB zone')
+
+        # 7. LTF CHOCH (worth 2 points)
         if ltf_ok:
             score+=2; reasons.append(f'LTF CHOCH {direction}')
         else:
             warns.append('LTF CHOCH not confirmed')
+
+        # 8. Bias aligned
         if bias_dir==direction:
             score+=1; reasons.append(
                 f'Bias W:{bias["weekly"]} D:{bias["daily"]}')
@@ -738,14 +760,17 @@ class SMCAnalysisEngine:
         if direction=='bearish' and cp>bias['daily_open']:
             score+=1; reasons.append('Above daily open — sell zone')
 
-        if score<cfg['min_score']:
-            no.warnings=[f'Score {score}/{cfg["min_score"]} not ready',
+        min_score=cfg['min_score']
+        if score<min_score:
+            no.warnings=[f'Score {score}/{min_score} — not ready',
                          *warns]; return no
-        if not ltf_ok:
-            no.warnings=['Waiting LTF CHOCH',*warns]; return no
-        if not mtf_ok:
-            no.warnings=['MTF not aligned — skip',*warns]; return no
 
+        # LTF CHOCH still required for entry timing
+        if not ltf_ok:
+            no.warnings=['Waiting for LTF CHOCH confirmation',
+                         *warns]; return no
+
+        # ── Entry / SL / TP ───────────────────────────
         if best_fvg:
             el=max(best_ob.zone_low,best_fvg.zone_low)
             eh=min(best_ob.zone_high,best_fvg.zone_high)
@@ -807,11 +832,11 @@ def format_signal(sig: SMCSignal, symbol: str,
     mkt   = '🔵 Crypto (24/7)' if is_crypto else sess
 
     if not sig.is_valid():
-        warn_text = ('\n'.join(f'  ⚠️ {w}' for w in sig.warnings)
-                     or '  No setup found')
+        warn_text=('\n'.join(f'  ⚠️ {w}' for w in sig.warnings)
+                   or '  No setup found')
         return (
             f'{badge}'
-            f'🔍 <b>Analysis: {symbol.upper()}</b>\n'
+            f'🔍 <b>{symbol.upper()}</b>\n'
             f'━━━━━━━━━━━━━━━━━━━━━━\n'
             f'🕐 {mkt}\n'
             f'━━━━━━━━━━━━━━━━━━━━━━\n'
@@ -864,7 +889,7 @@ def format_signal(sig: SMCSignal, symbol: str,
 
 
 # ═══════════════════════════════════════════════════
-#  FETCHER & ENGINE INSTANCES
+#  INSTANCES
 # ═══════════════════════════════════════════════════
 fetcher = PublicDataFetcher()
 engine  = SMCAnalysisEngine()
@@ -874,14 +899,14 @@ def scan_one_pair(symbol: str) -> Optional[SMCSignal]:
     try:
         cfg = Config.for_symbol(symbol)
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-            f_htf    = ex.submit(fetcher.fetch, symbol, Config.HTF, 200)
-            f_ltf    = ex.submit(fetcher.fetch, symbol, Config.LTF, 100)
-            f_daily  = ex.submit(fetcher.fetch, symbol, '1d', 30)
-            f_weekly = ex.submit(fetcher.fetch, symbol, '1w', 20)
-            f_oil    = (ex.submit(fetcher.get_oil_bias)
-                        if cfg.get('check_oil') else None)
+            f_htf  =ex.submit(fetcher.fetch,symbol,Config.HTF,200)
+            f_ltf  =ex.submit(fetcher.fetch,symbol,Config.LTF,100)
+            f_daily=ex.submit(fetcher.fetch,symbol,'1d',30)
+            f_week =ex.submit(fetcher.fetch,symbol,'1w',20)
+            f_oil  =(ex.submit(fetcher.get_oil_bias)
+                     if cfg.get('check_oil') else None)
             htf=f_htf.result(); ltf=f_ltf.result()
-            daily=f_daily.result(); weekly=f_weekly.result()
+            daily=f_daily.result(); weekly=f_week.result()
             oil=f_oil.result() if f_oil else 'neutral'
         if not htf: return None
         return engine.analyse(symbol,htf,ltf,daily,weekly,oil)
@@ -893,146 +918,118 @@ def scan_one_pair(symbol: str) -> Optional[SMCSignal]:
 #  AUTO SCANNER
 # ═══════════════════════════════════════════════════
 async def auto_scanner(app):
-    await asyncio.sleep(60)   # wait 1 min after start
+    await asyncio.sleep(60)
 
     while True:
         if not ScannerState.auto_alerts_on:
-            await asyncio.sleep(60)
-            continue
+            await asyncio.sleep(60); continue
 
         if SessionFilter.is_news_time():
-            log.info('Auto scan skipped — news time')
-            await asyncio.sleep(10 * 60)
-            continue
+            log.info('Scan skipped — news time')
+            await asyncio.sleep(10*60); continue
 
         sess = SessionFilter.current_session()
+        pairs_to_scan = (CRYPTO_PAIRS if sess=='dead' else ALL_SCAN_PAIRS)
+        log.info(f'Auto scan [{sess}] — {len(pairs_to_scan)} pairs')
 
-        # ── Decide which pairs to scan ─────────────────
-        if sess == 'dead':
-            # Dead hours: crypto only (24/7 market)
-            pairs_to_scan = CRYPTO_PAIRS
-            log.info('Dead session — scanning crypto only '
-                     f'({len(pairs_to_scan)} pairs)')
-        else:
-            # Active session: scan everything
-            pairs_to_scan = ALL_SCAN_PAIRS
-            log.info(f'Auto scan [{sess}] — '
-                     f'{len(pairs_to_scan)} pairs')
-
-        found = 0
+        found=0
         for symbol in pairs_to_scan:
             try:
-                if not ScannerState.can_alert(symbol):
-                    continue
-
-                is_crypto = fetcher.detect_type(symbol) == 'crypto'
-
-                # Session check per symbol
-                sess_warn = SessionFilter.check(symbol, is_crypto)
-                if sess_warn:
-                    continue
-
-                sig = scan_one_pair(symbol)
-                if sig is None:
-                    continue
-
-                if sig.is_alert_worthy():
+                if not ScannerState.can_alert(symbol): continue
+                is_crypto=fetcher.detect_type(symbol)=='crypto'
+                if SessionFilter.check(symbol,is_crypto): continue
+                sig=scan_one_pair(symbol)
+                if sig and sig.is_alert_worthy():
                     ScannerState.mark_alerted(symbol)
-                    msg = format_signal(sig, symbol,
-                                        is_alert=True,
-                                        is_crypto=is_crypto)
+                    msg=format_signal(sig,symbol,
+                                      is_alert=True,is_crypto=is_crypto)
                     await app.bot.send_message(
-                        chat_id    = Config.TELEGRAM_CHAT_ID,
-                        text       = msg,
-                        parse_mode = 'HTML'
+                        chat_id=Config.TELEGRAM_CHAT_ID,
+                        text=msg,parse_mode='HTML'
                     )
-                    found += 1
-                    log.info(f'ALERT: {symbol} | '
-                             f'Score:{sig.confluence_score} | '
+                    found+=1
+                    log.info(f'ALERT: {symbol} Score:{sig.confluence_score} '
                              f'RR:{sig.rr_ratio}')
                     await asyncio.sleep(2)
-
             except Exception as e:
                 log.error(f'Scanner {symbol}: {e}')
-
             await asyncio.sleep(1)
 
-        log.info(f'Scan done — {found} alerts sent')
-        await asyncio.sleep(Config.SCAN_INTERVAL_MINS * 60)
+        log.info(f'Scan done — {found} alerts')
+        await asyncio.sleep(Config.SCAN_INTERVAL_MINS*60)
 
 
 # ═══════════════════════════════════════════════════
 #  HANDLERS
 # ═══════════════════════════════════════════════════
 HELP_TEXT = """
-🤖 <b>SMC Signal Bot v3.1</b>
+🤖 <b>SMC Signal Bot v3.2</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 
-<b>Smart Session Rules:</b>
-  🔵 Crypto  → scanned 24/7 (no session limit)
-  📈 Forex   → London/NY only
-  🥇 Gold    → London session only
-  🛢 Oil     → London/NY only
+<b>What changed in v3.2:</b>
+  ✅ Score min lowered → getting signals now
+  ✅ MTF = bonus points, not hard block
+  ✅ Partial credit for 2/3 TFs aligned
+  ✅ Volatility filter relaxed slightly
+  ✅ Crypto scanned 24/7
 
 <b>Alert Rules:</b>
-  🚨 Score 7+  AND  RR 2.5+  only
-  ✅ No duplicate alerts (4h cooldown)
-  ✅ No alerts during news time
-  ✅ Scans every 30 minutes
+  🚨 Score 6+  AND  RR 2.0+
+  ✅ 4h cooldown per pair
+  ✅ No alerts during news
+  ✅ Every 30 min scan
 
 <b>Commands:</b>
-  /on      — turn auto alerts ON
-  /off     — turn auto alerts OFF
-  /scan    — manual scan all pairs NOW
-  /pairs   — show all scanned pairs
-  /status  — bot health & settings
+  /on      — auto alerts ON
+  /off     — auto alerts OFF
+  /scan    — manual scan NOW
+  /pairs   — all scanned pairs
+  /status  — bot health
   /help    — this message
 
 <b>Manual:</b>  just send any symbol
-  e.g.  XAUUSD  BTCUSDT  EURUSD
+  e.g.  XAUUSD  BTCUSDT  EURUSD  GBPJPY
 
-<b>Best Forex Sessions:</b>
+<b>Sessions (Forex):</b>
   🟢 07:00–10:00 UTC  London Open
   🟢 12:00–16:00 UTC  Overlap ⭐
-  🟡 16:00��21:00 UTC  New York
+  🟡 16:00–21:00 UTC  New York
   🔴 21:00–07:00 UTC  Avoid forex
+  🔵 Crypto → 24/7 always active
 """
 
-async def start_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    await u.message.reply_text(HELP_TEXT, parse_mode='HTML')
+async def start_handler(u,c):
+    await u.message.reply_text(HELP_TEXT,parse_mode='HTML')
 
-async def help_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    await u.message.reply_text(HELP_TEXT, parse_mode='HTML')
+async def help_handler(u,c):
+    await u.message.reply_text(HELP_TEXT,parse_mode='HTML')
 
-async def on_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    ScannerState.auto_alerts_on = True
+async def on_handler(u,c):
+    ScannerState.auto_alerts_on=True
     await u.message.reply_text(
         f'✅ <b>Auto Alerts ON</b>\n\n'
-        f'🔵 Crypto  : scanned 24/7 ({len(CRYPTO_PAIRS)} pairs)\n'
-        f'📈 Forex   : London/NY only ({len(FOREX_PAIRS_SCAN)} pairs)\n\n'
-        f'Alert: Score {Config.ALERT_MIN_SCORE}+ | '
-        f'RR {Config.ALERT_MIN_RR}+\n'
-        f'Cooldown: {Config.ALERT_COOLDOWN_HOURS}h per pair\n'
-        f'Interval: every {Config.SCAN_INTERVAL_MINS} min',
+        f'🔵 Crypto : {len(CRYPTO_PAIRS)} pairs 24/7\n'
+        f'📈 Forex  : {len(FOREX_PAIRS_SCAN)} pairs London/NY\n\n'
+        f'Alert: Score {Config.ALERT_MIN_SCORE}+ | RR {Config.ALERT_MIN_RR}+\n'
+        f'Cooldown: {Config.ALERT_COOLDOWN_HOURS}h | '
+        f'Every {Config.SCAN_INTERVAL_MINS}min',
         parse_mode='HTML'
     )
 
-async def off_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    ScannerState.auto_alerts_on = False
+async def off_handler(u,c):
+    ScannerState.auto_alerts_on=False
     await u.message.reply_text(
-        '🔕 <b>Auto Alerts OFF</b>\n\n'
-        'Send any symbol to analyse manually.\n'
-        'Use /on to turn back on.',
+        '🔕 <b>Auto Alerts OFF</b>\n\nSend any symbol to analyse manually.',
         parse_mode='HTML'
     )
 
-async def status_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    sess  = SessionFilter.current_session()
-    label = SESSION_EMOJI.get(sess, sess)
-    news  = '⚠️ YES' if SessionFilter.is_news_time() else '✅ Clear'
-    state = '✅ ON'  if ScannerState.auto_alerts_on  else '🔕 OFF'
+async def status_handler(u,c):
+    sess =SessionFilter.current_session()
+    label=SESSION_EMOJI.get(sess,sess)
+    news ='⚠️ YES' if SessionFilter.is_news_time() else '✅ Clear'
+    state='✅ ON'  if ScannerState.auto_alerts_on  else '🔕 OFF'
     await u.message.reply_text(
-        f'📊 <b>Bot Status v3.1</b>\n'
+        f'📊 <b>Bot Status v3.2</b>\n'
         f'━━━━━━━━━━━━━━━━━━━━━━\n'
         f'🤖 Auto Alerts  : {state}\n'
         f'🕐 Forex Session: {label}\n'
@@ -1041,40 +1038,36 @@ async def status_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
         f'━━━━━━━━━━━━━━━━━━━━━━\n'
         f'🔵 Crypto pairs : {len(CRYPTO_PAIRS)}\n'
         f'📈 Forex pairs  : {len(FOREX_PAIRS_SCAN)}\n'
-        f'👁 Total pairs  : {len(ALL_SCAN_PAIRS)}\n'
-        f'⏱ Interval     : {Config.SCAN_INTERVAL_MINS} min\n'
+        f'👁 Total        : {len(ALL_SCAN_PAIRS)}\n'
+        f'⏱ Interval     : {Config.SCAN_INTERVAL_MINS}min\n'
         f'🎯 Alert Score  : {Config.ALERT_MIN_SCORE}+\n'
         f'📊 Alert RR     : {Config.ALERT_MIN_RR}+\n'
         f'⏳ Cooldown     : {Config.ALERT_COOLDOWN_HOURS}h\n'
         f'📬 Alerted      : {len(ScannerState.last_alerted)} pairs\n'
-        f'━━━━━━━━━━━━━━━━━━━━━━\n'
+        f'━━━━━━━━━━━━━━━━��━━━━━\n'
         f'⏰ {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}',
         parse_mode='HTML'
     )
 
-async def pairs_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    def fmt(lst, cols=4):
+async def pairs_handler(u,c):
+    def fmt(lst,cols=4):
         rows=[]
         for i in range(0,len(lst),cols):
             rows.append('  '+'  '.join(lst[i:i+cols]))
         return '\n'.join(rows)
-
     forex_only=[p for p in FOREX_PAIRS_SCAN
                 if p not in ['XAUUSD','XAGUSD','USOIL','UKOIL']]
-    metals=['XAUUSD','XAGUSD']
-    oil   =['USOIL','UKOIL']
-
     await u.message.reply_text(
-        f'👁 <b>All Scanned Pairs ({len(ALL_SCAN_PAIRS)})</b>\n'
+        f'👁 <b>Scanning {len(ALL_SCAN_PAIRS)} Pairs</b>\n'
         f'━━━━━━━━━━━━━━━━━━━━━━\n\n'
         f'🔵 <b>Crypto ({len(CRYPTO_PAIRS)}) — 24/7:</b>\n'
         f'{fmt(CRYPTO_PAIRS)}\n\n'
         f'📈 <b>Forex ({len(forex_only)}) — London/NY:</b>\n'
         f'{fmt(forex_only)}\n\n'
         f'🥇 <b>Metals — London session:</b>\n'
-        f'  {" ".join(metals)}\n\n'
+        f'  XAUUSD  XAGUSD\n\n'
         f'🛢 <b>Oil — London/NY:</b>\n'
-        f'  {" ".join(oil)}\n\n'
+        f'  USOIL  UKOIL\n\n'
         f'━━━━━━━━━━━━━━━━━━━━━━\n'
         f'Alert: Score {Config.ALERT_MIN_SCORE}+ | '
         f'RR {Config.ALERT_MIN_RR}+ | '
@@ -1082,35 +1075,28 @@ async def pairs_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
         parse_mode='HTML'
     )
 
-async def scan_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    sess  = SessionFilter.current_session()
-    label = SESSION_EMOJI.get(sess, sess)
-
-    # During dead session scan crypto only
-    if sess == 'dead':
-        pairs = CRYPTO_PAIRS
-        note  = '(Dead session — crypto only)'
-    else:
-        pairs = ALL_SCAN_PAIRS
-        note  = '(Full scan)'
+async def scan_handler(u,c):
+    sess =SessionFilter.current_session()
+    label=SESSION_EMOJI.get(sess,sess)
+    pairs=(CRYPTO_PAIRS if sess=='dead' else ALL_SCAN_PAIRS)
+    note ='crypto only — dead session' if sess=='dead' else 'full scan'
 
     await u.message.reply_text(
-        f'🔍 <b>Manual Scan {note}</b>\n'
+        f'🔍 <b>Manual Scan ({note})</b>\n'
         f'Scanning {len(pairs)} pairs...\n'
         f'Session: {label}\n\n'
-        f'⏳ Takes 2-3 minutes...',
+        f'⏳ Takes 2-4 minutes...',
         parse_mode='HTML'
     )
 
     found=[]
     for symbol in pairs:
         try:
-            is_crypto = fetcher.detect_type(symbol) == 'crypto'
-            sess_warn = SessionFilter.check(symbol, is_crypto)
-            if sess_warn: continue
-            sig = scan_one_pair(symbol)
+            is_crypto=fetcher.detect_type(symbol)=='crypto'
+            if SessionFilter.check(symbol,is_crypto): continue
+            sig=scan_one_pair(symbol)
             if sig and sig.is_alert_worthy():
-                found.append((sig, is_crypto))
+                found.append((sig,is_crypto))
         except Exception as e:
             log.error(f'Manual scan {symbol}: {e}')
 
@@ -1120,8 +1106,8 @@ async def scan_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
             f'Scanned : {len(pairs)} pairs\n'
             f'Need    : Score {Config.ALERT_MIN_SCORE}+ | '
             f'RR {Config.ALERT_MIN_RR}+\n\n'
-            f'💡 Try during London/NY for forex\n'
-            f'💡 Crypto checked 24/7\n'
+            f'💡 Market may be consolidating\n'
+            f'💡 Try again in 30 minutes\n'
             f'⏰ {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}',
             parse_mode='HTML'
         )
@@ -1131,51 +1117,48 @@ async def scan_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
         f'✅ <b>{len(found)} Setup(s) Found!</b>',
         parse_mode='HTML'
     )
-    for sig, is_crypto in found:
-        msg = format_signal(sig, sig.symbol,
-                            is_alert=False, is_crypto=is_crypto)
-        await u.message.reply_text(msg, parse_mode='HTML')
+    for sig,is_crypto in found:
+        msg=format_signal(sig,sig.symbol,is_alert=False,is_crypto=is_crypto)
+        await u.message.reply_text(msg,parse_mode='HTML')
         await asyncio.sleep(1)
 
 async def symbol_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
-    raw       = u.message.text.strip()
-    symbol    = fetcher.normalize(raw)
-    is_crypto = fetcher.detect_type(symbol) == 'crypto'
+    raw      =u.message.text.strip()
+    symbol   =fetcher.normalize(raw)
+    is_crypto=fetcher.detect_type(symbol)=='crypto'
 
-    loading = await u.message.reply_text(
+    loading=await u.message.reply_text(
         f'🔍 Analysing <b>{symbol}</b>...\n⏳ Please wait...',
         parse_mode='HTML'
     )
 
     try:
-        start_time = time.time()
-
-        sess_warn = SessionFilter.check(symbol, is_crypto)
+        start_time=time.time()
+        sess_warn=SessionFilter.check(symbol,is_crypto)
         if sess_warn:
-            sess  = SessionFilter.current_session()
-            label = SESSION_EMOJI.get(sess, sess)
-            mkt   = '🔵 Crypto (24/7)' if is_crypto else label
+            sess =SessionFilter.current_session()
+            label=SESSION_EMOJI.get(sess,sess)
+            mkt  ='🔵 Crypto (24/7)' if is_crypto else label
             await loading.edit_text(
                 f'🔍 <b>{symbol}</b>\n'
                 f'━━━━━━━━━━━━━━━━━━━━━━\n'
-                f'🕐 {mkt}\n\n'
-                f'{sess_warn}\n\n'
+                f'🕐 {mkt}\n\n{sess_warn}\n\n'
                 f'⏰ {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}',
                 parse_mode='HTML'
             )
             return
 
-        cfg = Config.for_symbol(symbol)
+        cfg=Config.for_symbol(symbol)
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
-            f_htf    = ex.submit(fetcher.fetch, symbol, Config.HTF, 200)
-            f_ltf    = ex.submit(fetcher.fetch, symbol, Config.LTF, 100)
-            f_daily  = ex.submit(fetcher.fetch, symbol, '1d', 30)
-            f_weekly = ex.submit(fetcher.fetch, symbol, '1w', 20)
-            f_oil    = (ex.submit(fetcher.get_oil_bias)
-                        if cfg.get('check_oil') else None)
-            htf    = f_htf.result(); ltf    = f_ltf.result()
-            daily  = f_daily.result(); weekly = f_weekly.result()
-            oil    = f_oil.result() if f_oil else 'neutral'
+            f_htf  =ex.submit(fetcher.fetch,symbol,Config.HTF,200)
+            f_ltf  =ex.submit(fetcher.fetch,symbol,Config.LTF,100)
+            f_daily=ex.submit(fetcher.fetch,symbol,'1d',30)
+            f_week =ex.submit(fetcher.fetch,symbol,'1w',20)
+            f_oil  =(ex.submit(fetcher.get_oil_bias)
+                     if cfg.get('check_oil') else None)
+            htf   =f_htf.result(); ltf   =f_ltf.result()
+            daily =f_daily.result(); weekly=f_week.result()
+            oil   =f_oil.result() if f_oil else 'neutral'
 
         if not htf:
             await loading.edit_text(
@@ -1184,50 +1167,48 @@ async def symbol_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        sig     = engine.analyse(symbol, htf, ltf, daily, weekly, oil)
-        elapsed = round(time.time()-start_time, 1)
-        msg     = format_signal(sig, symbol,
-                                is_alert=False, is_crypto=is_crypto)
-        msg    += f'\n⚡ <i>Done in {elapsed}s</i>'
-        await loading.edit_text(msg, parse_mode='HTML')
-        log.info(f'{symbol}: {sig.direction.value} | '
-                 f'Score:{sig.confluence_score} | RR:{sig.rr_ratio}')
+        sig    =engine.analyse(symbol,htf,ltf,daily,weekly,oil)
+        elapsed=round(time.time()-start_time,1)
+        msg    =format_signal(sig,symbol,is_alert=False,is_crypto=is_crypto)
+        msg   +=f'\n⚡ <i>Done in {elapsed}s</i>'
+        await loading.edit_text(msg,parse_mode='HTML')
+        log.info(f'{symbol}: {sig.direction.value} '
+                 f'Score:{sig.confluence_score} RR:{sig.rr_ratio}')
 
     except Exception as e:
         log.error(f'Error {symbol}: {e}')
         await loading.edit_text(
-            f'❌ Error: {symbol}\n{str(e)[:200]}',
-            parse_mode='HTML'
-        )
+            f'❌ Error: {symbol}\n{str(e)[:200]}',parse_mode='HTML')
 
 
 # ═══════════════════════════════════════════════════
 #  MAIN
-# ═══════════════════════════════════��═══════════════
+# ═══════════════════════════════════════════════════
 def main():
-    token = Config.TELEGRAM_BOT_TOKEN
+    token=Config.TELEGRAM_BOT_TOKEN
     if not token:
         log.error('TELEGRAM_BOT_TOKEN not set'); return
 
     log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-    log.info('SMC Signal Bot v3.1')
-    log.info(f'Crypto pairs : {len(CRYPTO_PAIRS)} (24/7)')
-    log.info(f'Forex pairs  : {len(FOREX_PAIRS_SCAN)} (London/NY)')
-    log.info(f'Alert        : Score {Config.ALERT_MIN_SCORE}+ | '
-             f'RR {Config.ALERT_MIN_RR}+')
-    log.info(f'Interval     : {Config.SCAN_INTERVAL_MINS} min')
+    log.info('SMC Signal Bot v3.2')
+    log.info(f'Crypto : {len(CRYPTO_PAIRS)} pairs (24/7)')
+    log.info(f'Forex  : {len(FOREX_PAIRS_SCAN)} pairs (London/NY)')
+    log.info(f'Score  : manual {Config.MIN_CONFLUENCE_SCORE}+ | '
+             f'alert {Config.ALERT_MIN_SCORE}+')
+    log.info(f'RR     : manual {Config.MIN_RR_RATIO}+ | '
+             f'alert {Config.ALERT_MIN_RR}+')
     log.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
 
-    app = ApplicationBuilder().token(token).build()
-    app.add_handler(CommandHandler('start' , start_handler))
-    app.add_handler(CommandHandler('help'  , help_handler))
-    app.add_handler(CommandHandler('on'    , on_handler))
-    app.add_handler(CommandHandler('off'   , off_handler))
-    app.add_handler(CommandHandler('status', status_handler))
-    app.add_handler(CommandHandler('pairs' , pairs_handler))
-    app.add_handler(CommandHandler('scan'  , scan_handler))
+    app=ApplicationBuilder().token(token).build()
+    app.add_handler(CommandHandler('start' ,start_handler))
+    app.add_handler(CommandHandler('help'  ,help_handler))
+    app.add_handler(CommandHandler('on'    ,on_handler))
+    app.add_handler(CommandHandler('off'   ,off_handler))
+    app.add_handler(CommandHandler('status',status_handler))
+    app.add_handler(CommandHandler('pairs' ,pairs_handler))
+    app.add_handler(CommandHandler('scan'  ,scan_handler))
     app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, symbol_handler))
+        filters.TEXT & ~filters.COMMAND,symbol_handler))
 
     async def post_init(application):
         if Config.TELEGRAM_CHAT_ID:
@@ -1236,9 +1217,9 @@ def main():
         else:
             log.warning('No CHAT_ID — auto scanner disabled')
 
-    app.post_init = post_init
+    app.post_init=post_init
     log.info('Bot running.')
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__ == '__main__':
+if __name__=='__main__':
     main()
