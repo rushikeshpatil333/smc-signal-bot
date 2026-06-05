@@ -1,19 +1,20 @@
 """
-ICT + SMC + MMC Signal Bot — v6.0 HIGH ACCURACY
+ICT + SMC + MMC Signal Bot — v6.1 BALANCED
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FIXES from v5.0 (was 12% accuracy → target 65%+):
-  1. Score threshold: 6 → 8
-  2. RR threshold:    1.8 → 2.2
-  3. Dead session:    allowed → BLOCKED
-  4. LTF CHOCH:       soft → HARD GATE
-  5. MTF alignment:   2/3 → 3/3 REQUIRED
-  6. Trend strength:  1 → 2 minimum
-  7. Liquidity sweep: optional → REQUIRED
-  8. News buffer:     30min → 60min
-  9. Volatility gate: none → ATR spike block
-  10. Candle confirm: none → LTF rejection needed
-  11. OB proximity:   5% → 2% (tighter)
-  12. Only London Open + NY Open sessions
+v6.1 Changes from v6.0 (was getting 0 signals):
+  1. Score threshold:    8 → 7
+  2. RR threshold:       2.2 → 2.0
+  3. OB proximity:       2% → 4%
+  4. OB+FVG hard gate:   REMOVED (OB alone ok)
+  5. Liquidity sweep:    required → optional
+  6. MTF alignment:      3/3 → 2/3 enough
+  7. Trend strength:     2 → 1 minimum
+  8. Pre-NY session:     ADDED
+  9. News buffer:        60min → 45min
+  10. Cooldown:          6h → 5h
+  11. HTF bias mismatch: hard block → warning only
+  12. Max alerts/day:    5 → 8
+  Target: 5-8 signals/week at 55-65% accuracy
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -33,7 +34,7 @@ from telegram.ext import (
 load_dotenv()
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s | %(levelname)s | %(message)s')
-log = logging.getLogger('ICT_MMC_v6')
+log = logging.getLogger('ICT_MMC_v61')
 NY_TZ = ZoneInfo('America/New_York')
 
 # ═══════════════════════════════════════════════════════
@@ -51,6 +52,7 @@ FOREX_PAIRS_SCAN = [
     'XAUUSD','XAGUSD','USOIL','UKOIL',
 ]
 ALL_SCAN_PAIRS = CRYPTO_PAIRS + FOREX_PAIRS_SCAN
+HIGH_VALUE_PAIRS = ['XAUUSD','BTCUSDT','ETHUSDT','EURUSD','GBPUSD','GBPJPY','USDJPY']
 
 SMT_PAIRS = {
     'XAUUSD':'XAGUSD','XAGUSD':'XAUUSD',
@@ -60,66 +62,62 @@ SMT_PAIRS = {
     'USDCAD':'USDCHF','USDCHF':'USDCAD',
 }
 
-# HIGH VALUE PAIRS — stricter filters applied
-HIGH_VALUE_PAIRS = ['XAUUSD','BTCUSDT','ETHUSDT','EURUSD','GBPUSD','GBPJPY','USDJPY']
-
 # ═══════════════════════════════════════════════════════
-#  CONFIG v6.0 — STRICT ACCURACY MODE
+#  CONFIG v6.1 — BALANCED
 # ═══════════════════════════════════════════════════════
 class Config:
     TELEGRAM_BOT_TOKEN       = os.getenv('TELEGRAM_BOT_TOKEN', '')
     TELEGRAM_CHAT_ID         = os.getenv('TELEGRAM_CHAT_ID', '')
 
-    # ── Timeframes ──────────────────────────────────────
     HTF                      = '1h'
     LTF                      = '5m'
     CANDLE_LIMIT             = 200
 
-    # ── Accuracy thresholds (RAISED from v5.0) ──────────
-    MIN_CONFLUENCE_SCORE     = 6      # v5: 4
-    MIN_RR_RATIO             = 1.8    # v5: 1.5
-    ALERT_MIN_SCORE          = 8      # v5: 6  ← KEY FIX
-    ALERT_MIN_RR             = 2.2    # v5: 1.8 ← KEY FIX
+    # ── Balanced thresholds ─────────────────────────────
+    MIN_CONFLUENCE_SCORE     = 5      # v6.0: 6
+    MIN_RR_RATIO             = 1.8    # v6.0: 1.8
+    ALERT_MIN_SCORE          = 7      # v6.0: 8
+    ALERT_MIN_RR             = 2.0    # v6.0: 2.2
 
-    # ── Hard gates (NEW in v6.0) ─────────────────────────
-    REQUIRE_LTF_CHOCH        = True   # v5: False
-    REQUIRE_LIQUIDITY_SWEEP  = True   # v5: False
-    REQUIRE_3_3_MTF          = True   # v5: 2/3 was enough
-    MIN_TREND_STRENGTH       = 2      # v5: 1
-    BLOCK_DEAD_SESSION       = True   # v5: False
-    REQUIRE_KILLZONE         = True   # v5: False
+    # ── Hard gates ──────────────────────────────────────
+    REQUIRE_LTF_CHOCH        = True   # KEEP strict
+    REQUIRE_LIQUIDITY_SWEEP  = False  # v6.0: True
+    REQUIRE_3_3_MTF          = False  # v6.0: True
+    MIN_TREND_STRENGTH       = 1      # v6.0: 2
+    BLOCK_DEAD_SESSION       = True   # KEEP strict
+    REQUIRE_KILLZONE         = True   # KEEP strict
 
     # ── Filters ─────────────────────────────────────────
     SL_BUFFER_PCT            = 0.002
-    DISPLACEMENT_MULT        = 1.0    # v5: 0.8 (tighter)
-    OB_PROXIMITY_PCT         = 0.02   # v5: 0.05 (tighter)
+    DISPLACEMENT_MULT        = 1.0
+    OB_PROXIMITY_PCT         = 0.04   # v6.0: 0.02
     SWING_LOOKBACK           = 5
-    NEWS_BUFFER_MINS         = 60     # v5: 30
-    ATR_SPIKE_MULT           = 2.5    # block if ATR spike > 2.5x
-    ALERT_COOLDOWN_HOURS     = 6      # v5: 4
+    NEWS_BUFFER_MINS         = 45     # v6.0: 60
+    ATR_SPIKE_MULT           = 2.5
+    ALERT_COOLDOWN_HOURS     = 5      # v6.0: 6
     SCAN_INTERVAL_MINS       = 30
+    MAX_ALERTS_PER_DAY       = 8      # v6.0: 5
 
-    # ── Session filter (NEW in v6.0) ─────────────────────
-    ALLOWED_SESSIONS         = ['london_open', 'ny_open', 'london']
-    # Dead session blocked for forex — crypto allowed 24/7
+    # ── Sessions — pre_ny added ──────────────────────────
+    ALLOWED_SESSIONS = ['london_open','ny_open','london','pre_ny']
 
     SYMBOL_SETTINGS: Dict = {
-        'XAUUSD': {'min_score':8,'min_rr':2.0,'sl_buffer_pct':0.005,'min_trend':2},
-        'GBPUSD': {'min_score':8,'min_rr':2.2,'sl_buffer_pct':0.002,'min_trend':2},
-        'GBPJPY': {'min_score':8,'min_rr':2.0,'sl_buffer_pct':0.003,'min_trend':2},
-        'USDCAD': {'min_score':8,'min_rr':2.0,'sl_buffer_pct':0.002,'check_oil':True},
-        'BTCUSDT':{'min_score':7,'min_rr':2.0,'sl_buffer_pct':0.003,'min_trend':2},
-        'ETHUSDT':{'min_score':7,'min_rr':2.0,'sl_buffer_pct':0.003,'min_trend':2},
+        'XAUUSD': {'min_score':7,'min_rr':2.0,'sl_buffer_pct':0.005,'min_trend':1},
+        'GBPUSD': {'min_score':7,'min_rr':2.0,'sl_buffer_pct':0.002,'min_trend':1},
+        'GBPJPY': {'min_score':7,'min_rr':2.0,'sl_buffer_pct':0.003,'min_trend':1},
+        'USDCAD': {'min_score':7,'min_rr':2.0,'sl_buffer_pct':0.002,'check_oil':True},
+        'BTCUSDT':{'min_score':6,'min_rr':1.8,'sl_buffer_pct':0.003,'min_trend':1},
+        'ETHUSDT':{'min_score':6,'min_rr':1.8,'sl_buffer_pct':0.003,'min_trend':1},
     }
 
     @classmethod
     def for_symbol(cls, s: str) -> Dict:
         d = {
-            'min_score':    cls.ALERT_MIN_SCORE,
-            'min_rr':       cls.MIN_RR_RATIO,
-            'sl_buffer_pct':cls.SL_BUFFER_PCT,
-            'check_oil':    False,
-            'min_trend':    cls.MIN_TREND_STRENGTH,
+            'min_score':     cls.ALERT_MIN_SCORE,
+            'min_rr':        cls.MIN_RR_RATIO,
+            'sl_buffer_pct': cls.SL_BUFFER_PCT,
+            'check_oil':     False,
+            'min_trend':     cls.MIN_TREND_STRENGTH,
         }
         return {**d, **cls.SYMBOL_SETTINGS.get(s, {})}
 
@@ -127,17 +125,17 @@ class Config:
 #  STATE
 # ═══════════════════════════════════════════════════════
 class ScannerState:
-    auto_alerts_on    = True
+    auto_alerts_on     = True
     last_alerted: Dict[str, datetime] = {}
-    daily_pnl_pct     = 0.0
-    daily_reset_date  = ''
+    daily_pnl_pct      = 0.0
+    daily_reset_date   = ''
     total_alerts_today = 0
-    MAX_ALERTS_PER_DAY = 5   # NEW: limit signals per day
 
     @classmethod
     def can_alert(cls, sym: str) -> bool:
         if sym not in cls.last_alerted: return True
-        return datetime.now(timezone.utc) - cls.last_alerted[sym] >= timedelta(hours=Config.ALERT_COOLDOWN_HOURS)
+        return (datetime.now(timezone.utc) - cls.last_alerted[sym]
+                >= timedelta(hours=Config.ALERT_COOLDOWN_HOURS))
 
     @classmethod
     def mark_alerted(cls, sym: str):
@@ -147,19 +145,19 @@ class ScannerState:
     def check_daily_reset(cls):
         today = datetime.now(NY_TZ).strftime('%Y-%m-%d')
         if cls.daily_reset_date != today:
-            cls.daily_pnl_pct = 0.0
-            cls.daily_reset_date = today
+            cls.daily_pnl_pct      = 0.0
+            cls.daily_reset_date   = today
             cls.total_alerts_today = 0
 
     @classmethod
     def daily_loss_ok(cls) -> bool:
         cls.check_daily_reset()
-        return cls.daily_pnl_pct > -2.0   # v5: -3.0 (stricter)
+        return cls.daily_pnl_pct > -2.0
 
     @classmethod
     def daily_alert_ok(cls) -> bool:
         cls.check_daily_reset()
-        return cls.total_alerts_today < cls.MAX_ALERTS_PER_DAY
+        return cls.total_alerts_today < Config.MAX_ALERTS_PER_DAY
 
 # ═══════════════════════════════════════════════════════
 #  ENUMS & DATACLASSES
@@ -229,7 +227,7 @@ class MMCContext:
     zone_passes_99pct: bool = False
     structure_repetition: bool = False
     insider_sd_zone: bool = False
-    ltf_rejection_confirmed: bool = False  # NEW v6
+    ltf_rejection_confirmed: bool = False
     nv: Optional[NeededVolumeResult] = None
     nv_score: int = 0
     mmcScore: int = 0
@@ -271,12 +269,12 @@ class SMCSignal:
     reasons: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     timestamp: str = ''; is_nv_premium: bool = False
-    trend_strength_val: int = 0  # NEW v6
+    trend_strength_val: int = 0
 
     def is_valid(self) -> bool:
         cfg = Config.for_symbol(self.symbol)
         return (self.direction != SignalDirection.NO_TRADE
-                and self.rr_ratio >= cfg['min_rr']
+                and self.rr_ratio  >= cfg['min_rr']
                 and self.confluence_score >= cfg['min_score'])
 
     def is_alert_worthy(self) -> bool:
@@ -294,10 +292,10 @@ class ICTTimeEngine:
         'london':      (5,8),
         'pre_ny':      (7,8),
         'ny_open':     (8,11),
-        'london_close':(10,12)
+        'london_close':(10,12),
     }
-    NEWS_TIMES_UTC = [(8,30),(9,30),(12,30),(13,30),(14,0),(14,30),(18,0),(18,30)]
-    NEWS_BUFFER_MINS = 60   # v6: 60 was 30
+    NEWS_TIMES_UTC   = [(8,30),(9,30),(12,30),(13,30),(14,0),(14,30),(18,0),(18,30)]
+    NEWS_BUFFER_MINS = Config.NEWS_BUFFER_MINS
 
     @classmethod
     def now_ny(cls): return datetime.now(NY_TZ)
@@ -324,26 +322,25 @@ class ICTTimeEngine:
 
     @classmethod
     def is_valid_session(cls, is_crypto: bool = False) -> Tuple[bool, str]:
-        """NEW v6: Hard gate — only trade during allowed sessions"""
         if is_crypto: return True, 'crypto_24_7'
         kz = cls.get_kill_zone()
-        if kz in Config.ALLOWED_SESSIONS:
-            return True, kz
-        return False, kz
+        return (kz in Config.ALLOWED_SESSIONS), kz
 
     @classmethod
     def is_news_time(cls) -> bool:
         now = datetime.now(timezone.utc); curr = now.hour*60+now.minute
-        return any(abs(curr-nh*60-nm) <= cls.NEWS_BUFFER_MINS
+        return any(abs(curr - nh*60 - nm) <= cls.NEWS_BUFFER_MINS
                    for nh,nm in cls.NEWS_TIMES_UTC)
 
     @classmethod
     def is_830_passed(cls):
-        n = cls.now_ny(); return n >= n.replace(hour=8,minute=30,second=0,microsecond=0)
+        n = cls.now_ny()
+        return n >= n.replace(hour=8, minute=30, second=0, microsecond=0)
 
     @classmethod
     def is_930_passed(cls):
-        n = cls.now_ny(); return n >= n.replace(hour=9,minute=30,second=0,microsecond=0)
+        n = cls.now_ny()
+        return n >= n.replace(hour=9, minute=30, second=0, microsecond=0)
 
     @classmethod
     def session_label(cls) -> str:
@@ -353,7 +350,7 @@ class ICTTimeEngine:
             'pre_ny':       '🟠 Pre-NY',
             'ny_open':      '🟢 NY Open ⭐',
             'london_close': '🟡 London Close',
-            'dead':         '🔴 Dead Session'
+            'dead':         '🔴 Dead Session',
         }
         return labels.get(cls.get_kill_zone(), 'Unknown')
 
@@ -361,27 +358,27 @@ class ICTTimeEngine:
 #  DATA FETCHER
 # ═══════════════════════════════════════════════════════
 class PublicDataFetcher:
-    BINANCE_TF   = {'1m':'1m','3m':'3m','5m':'5m','15m':'15m','30m':'30m',
-                    '1h':'1h','4h':'4h','1d':'1d','1w':'1w','1M':'1M'}
-    YAHOO_INT    = {'5m':'5m','15m':'15m','30m':'30m','1h':'1h',
-                    '4h':'1h','1d':'1d','1w':'1wk','1M':'1mo'}
-    YAHOO_RANGE  = {'5m':'7d','15m':'60d','30m':'60d','1h':'2y',
-                    '4h':'2y','1d':'5y','1w':'10y','1M':'10y'}
-    CG_MAP       = {'BTCUSDT':'bitcoin','ETHUSDT':'ethereum','SOLUSDT':'solana',
-                    'BNBUSDT':'binancecoin','XRPUSDT':'ripple','ADAUSDT':'cardano',
-                    'DOGEUSDT':'dogecoin','DOTUSDT':'polkadot','AVAXUSDT':'avalanche-2',
-                    'LINKUSDT':'chainlink','LTCUSDT':'litecoin'}
-    CG_DAYS      = {'5m':'1','15m':'1','30m':'2','1h':'7','4h':'30','1d':'365'}
-    YAHOO_SYM    = {'XAUUSD':'GC=F','XAGUSD':'SI=F','USOIL':'CL=F','UKOIL':'BZ=F',
-                    'BTCUSDT':'BTC-USD','ETHUSDT':'ETH-USD','SOLUSDT':'SOL-USD',
-                    'BNBUSDT':'BNB-USD','XRPUSDT':'XRP-USD','ADAUSDT':'ADA-USD',
-                    'DOGEUSDT':'DOGE-USD','DOTUSDT':'DOT-USD','AVAXUSDT':'AVAX-USD',
-                    'LINKUSDT':'LINK-USD','LTCUSDT':'LTC-USD'}
-    ALL_FOREX    = ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD','USDCHF','NZDUSD',
-                    'EURJPY','EURGBP','EURAUD','EURCAD','EURCHF','EURNZD','GBPJPY',
-                    'GBPAUD','GBPCAD','GBPCHF','GBPNZD','AUDJPY','AUDCAD','AUDCHF',
-                    'AUDNZD','NZDJPY','NZDCAD','NZDCHF','CADJPY','CADCHF','CHFJPY',
-                    'XAUUSD','XAGUSD','USOIL','UKOIL']
+    BINANCE_TF  = {'1m':'1m','3m':'3m','5m':'5m','15m':'15m','30m':'30m',
+                   '1h':'1h','4h':'4h','1d':'1d','1w':'1w','1M':'1M'}
+    YAHOO_INT   = {'5m':'5m','15m':'15m','30m':'30m','1h':'1h',
+                   '4h':'1h','1d':'1d','1w':'1wk','1M':'1mo'}
+    YAHOO_RANGE = {'5m':'7d','15m':'60d','30m':'60d','1h':'2y',
+                   '4h':'2y','1d':'5y','1w':'10y','1M':'10y'}
+    CG_MAP      = {'BTCUSDT':'bitcoin','ETHUSDT':'ethereum','SOLUSDT':'solana',
+                   'BNBUSDT':'binancecoin','XRPUSDT':'ripple','ADAUSDT':'cardano',
+                   'DOGEUSDT':'dogecoin','DOTUSDT':'polkadot','AVAXUSDT':'avalanche-2',
+                   'LINKUSDT':'chainlink','LTCUSDT':'litecoin'}
+    CG_DAYS     = {'5m':'1','15m':'1','30m':'2','1h':'7','4h':'30','1d':'365'}
+    YAHOO_SYM   = {'XAUUSD':'GC=F','XAGUSD':'SI=F','USOIL':'CL=F','UKOIL':'BZ=F',
+                   'BTCUSDT':'BTC-USD','ETHUSDT':'ETH-USD','SOLUSDT':'SOL-USD',
+                   'BNBUSDT':'BNB-USD','XRPUSDT':'XRP-USD','ADAUSDT':'ADA-USD',
+                   'DOGEUSDT':'DOGE-USD','DOTUSDT':'DOT-USD','AVAXUSDT':'AVAX-USD',
+                   'LINKUSDT':'LINK-USD','LTCUSDT':'LTC-USD'}
+    ALL_FOREX   = ['EURUSD','GBPUSD','USDJPY','AUDUSD','USDCAD','USDCHF','NZDUSD',
+                   'EURJPY','EURGBP','EURAUD','EURCAD','EURCHF','EURNZD','GBPJPY',
+                   'GBPAUD','GBPCAD','GBPCHF','GBPNZD','AUDJPY','AUDCAD','AUDCHF',
+                   'AUDNZD','NZDJPY','NZDCAD','NZDCHF','CADJPY','CADCHF','CHFJPY',
+                   'XAUUSD','XAGUSD','USOIL','UKOIL']
 
     def detect_type(self, s: str) -> str:
         s = s.upper().replace('/','').replace('-','')
@@ -400,7 +397,8 @@ class PublicDataFetcher:
     def _binance(self, symbol, tf, limit):
         try:
             r = requests.get('https://api.binance.com/api/v3/klines',
-                params={'symbol':symbol,'interval':self.BINANCE_TF.get(tf,'1h'),'limit':limit},timeout=10)
+                params={'symbol':symbol,'interval':self.BINANCE_TF.get(tf,'1h'),'limit':limit},
+                timeout=10)
             if r.status_code != 200: return []
             return [Candle(time=str(datetime.fromtimestamp(row[0]/1000,tz=timezone.utc)),
                            open=float(row[1]),high=float(row[2]),low=float(row[3]),
@@ -412,9 +410,10 @@ class PublicDataFetcher:
         try:
             cid = self.CG_MAP.get(symbol)
             if not cid: return []
-            r = requests.get(f'https://api.coingecko.com/api/v3/coins/{cid}/ohlc'
-                             f'?vs_currency=usd&days={self.CG_DAYS.get(tf,"7")}',
-                             headers={'User-Agent':'Mozilla/5.0'}, timeout=15)
+            r = requests.get(
+                f'https://api.coingecko.com/api/v3/coins/{cid}/ohlc'
+                f'?vs_currency=usd&days={self.CG_DAYS.get(tf,"7")}',
+                headers={'User-Agent':'Mozilla/5.0'}, timeout=15)
             if r.status_code != 200: return []
             return [Candle(time=str(datetime.fromtimestamp(row[0]/1000,tz=timezone.utc)),
                            open=float(row[1]),high=float(row[2]),low=float(row[3]),
@@ -429,8 +428,9 @@ class PublicDataFetcher:
             hd = {'User-Agent':'Mozilla/5.0','Accept':'application/json'}
             for host in ['query1','query2']:
                 try:
-                    r = requests.get(f'https://{host}.finance.yahoo.com/v8/finance/chart/{ys}'
-                                     f'?interval={iv}&range={rg}', headers=hd, timeout=15)
+                    r = requests.get(
+                        f'https://{host}.finance.yahoo.com/v8/finance/chart/{ys}'
+                        f'?interval={iv}&range={rg}', headers=hd, timeout=15)
                     if r.status_code != 200: continue
                     res = r.json().get('chart',{}).get('result',[])
                     if not res: continue
@@ -467,7 +467,7 @@ class PublicDataFetcher:
         except Exception: return 'neutral'
 
 # ═══════════════════════════════════════════════════════
-#  MMC ENGINE v6.0
+#  MMC ENGINE v6.1
 # ═══════════════════════════════════════════════════════
 class MMCEngine:
 
@@ -490,16 +490,13 @@ class MMCEngine:
         return score, reasons
 
     def confirm_ltf_rejection(self, ltf_candles, direction, atr) -> bool:
-        """NEW v6: Confirm LTF price rejection at zone"""
         if len(ltf_candles) < 5: return False
         recent = ltf_candles[-6:]
         if direction == 'bullish':
-            # Need bearish push then bullish reversal
             bears = sum(1 for c in recent[:3] if c.is_bearish())
             bulls = sum(1 for c in recent[3:] if c.is_bullish() and c.body_size() >= atr*0.5)
             return bears >= 1 and bulls >= 1
         else:
-            # Need bullish push then bearish reversal
             bulls = sum(1 for c in recent[:3] if c.is_bullish())
             bears = sum(1 for c in recent[3:] if c.is_bearish() and c.body_size() >= atr*0.5)
             return bulls >= 1 and bears >= 1
@@ -519,7 +516,7 @@ class MMCEngine:
         return False, ('high' if vw else 'low')
 
     def zone_passes_99pct_filter(self, confluences: int) -> bool:
-        return confluences >= 3   # v6: raised from 2
+        return confluences >= 2
 
     def detect_structure_repetition(self, candles, direction) -> bool:
         if len(candles) < 40: return False
@@ -531,7 +528,7 @@ class MMCEngine:
         if len(ranges) < 3: return False
         avg = sum(ranges)/len(ranges)
         var = sum(abs(r-avg) for r in ranges)/len(ranges)
-        return (var/avg) < 0.4 if avg > 0 else False
+        return (var/avg) < 0.45 if avg > 0 else False
 
     def is_straight_market(self, candles, lookback=25) -> bool:
         if len(candles) < lookback: return False
@@ -541,7 +538,7 @@ class MMCEngine:
         avg = sum(dists)/len(dists) if dists else 0
         if avg == 0: return False
         var = sum(abs(d-avg) for d in dists)/len(dists)
-        return (var/avg) < 0.45
+        return (var/avg) < 0.5
 
     def detect_parallel_channel(self, candles, lookback=35):
         if len(candles) < lookback: return None
@@ -562,7 +559,6 @@ class MMCEngine:
                  if abs(c.body_low()-(ls*i+li)) < (max(bl)-min(bl)+1e-9)*0.08)
         strength = min((ut+lt)/8.0, 1.0)
         straight = self.is_straight_market(candles, lookback)
-
         class PC:
             def __init__(self):
                 self.upper_slope=us; self.lower_slope=ls
@@ -577,21 +573,21 @@ class MMCEngine:
         if not self.is_straight_market(candles):
             null.reason='Not a straight market'; return null
         ch = self.detect_parallel_channel(candles)
-        if not ch or ch.strength < 0.15:
+        if not ch or ch.strength < 0.12:
             null.reason='No clean channel'; return null
         n = len(candles); nv_zone = None
         if direction == 'bearish':
             for i in range(n-3, max(n-20,5), -1):
                 c = candles[i]; exp = ch.upper_slope*i + ch.upper_intercept
                 gap = exp - c.body_high()
-                if gap > atr*0.5 and c.is_bearish():
+                if gap > atr*0.4 and c.is_bearish():
                     nv_zone={'low':c.body_high(),'high':exp,'expected':exp,
                              'actual':c.body_high(),'index':i,'type':'negative'}; break
         else:
             for i in range(n-3, max(n-20,5), -1):
                 c = candles[i]; exp = ch.lower_slope*i + ch.lower_intercept
                 gap = c.body_low() - exp
-                if gap > atr*0.5 and c.is_bullish():
+                if gap > atr*0.4 and c.is_bullish():
                     nv_zone={'low':exp,'high':c.body_low(),'expected':exp,
                              'actual':c.body_low(),'index':i,'type':'positive'}; break
         if not nv_zone:
@@ -606,7 +602,7 @@ class MMCEngine:
         is_cont = (self._get_local_trend(candles[-15:]) == direction)
         if sva >= 2.5 and loc >= 2 and not is_frag and ifc_sz >= atr*1.5:
             qual = NVQuality.PREMIUM
-        elif sva >= 1.5 and not is_frag:
+        elif sva >= 1.2 and not is_frag:
             qual = NVQuality.STANDARD
         else:
             qual = NVQuality.WEAK
@@ -622,18 +618,18 @@ class MMCEngine:
         mb = max(bodies); ab = sum(bodies)/len(bodies) if bodies else 0
         if ab == 0: return None,0,''
         for c in reversed(recent):
-            if c.body_size()>=mb*0.7 and c.body_size()>=ab*2.0:
+            if c.body_size()>=mb*0.7 and c.body_size()>=ab*1.8:
                 near = c.low<=nv_zone['high']*1.003 and c.high>=nv_zone['low']*0.997
                 if near:
                     return c, c.body_size(), ('bullish' if c.is_bullish() else 'bearish')
         return None,0,''
 
     def _check_fragmented(self, candles, atr) -> bool:
-        if not candles: return True
+        if not candles: return False
         bodies = [c.body_size() for c in candles]
         avg = sum(bodies)/len(bodies) if bodies else 0
         small = sum(1 for b in bodies if b < avg*0.6)
-        return small > len(candles)*0.7
+        return small > len(candles)*0.75
 
     def _score_location(self, nv_zone, sr_levels, atr) -> int:
         if not sr_levels: return 0
@@ -684,13 +680,12 @@ class MMCEngine:
             score += 1; ctx.reasons.append('Candle nature ✅')
         ctx.reasons.extend(cnr)
 
-        # NEW v6: LTF rejection confirmation
         ltf_atr = atr * 0.3
         ctx.ltf_rejection_confirmed = self.confirm_ltf_rejection(ltf, direction, ltf_atr)
         if ctx.ltf_rejection_confirmed:
             score += 2; ctx.reasons.append('LTF rejection confirmed ✅✅')
         else:
-            ctx.warnings.append('No LTF rejection at zone ⚠️')
+            ctx.warnings.append('No LTF rejection yet ⚠️')
 
         fo,fop = self.detect_fakeout(candles, direction, atr)
         ctx.fakeout_detected=fo; ctx.fakeout_probability=fop
@@ -715,13 +710,13 @@ class MMCEngine:
         ctx.nv = nv
         if nv.valid:
             np = 0
-            if nv.quality==NVQuality.PREMIUM:   np=3; ctx.reasons.append('NV PREMIUM ⭐⭐⭐')
-            elif nv.quality==NVQuality.STANDARD: np=2; ctx.reasons.append('NV STANDARD ⭐⭐')
-            else:                                np=1; ctx.reasons.append('NV WEAK ⭐')
+            if nv.quality==NVQuality.PREMIUM:    np=3; ctx.reasons.append('NV PREMIUM ⭐⭐⭐')
+            elif nv.quality==NVQuality.STANDARD:  np=2; ctx.reasons.append('NV STANDARD ⭐⭐')
+            else:                                 np=1; ctx.reasons.append('NV WEAK ⭐')
             if nv.ifc_confirmed:    np+=1; ctx.reasons.append('IFC confirmed ✅')
             if nv.location_score>=2: np+=1; ctx.reasons.append('NV at major S/R ✅')
             if nv.sr_interchange:   np+=1; ctx.reasons.append('S/R interchange ✅')
-            if nv.is_fragmented:    np-=2; ctx.warnings.append('Fragmented NV ⚠️')
+            if nv.is_fragmented:    np-=1; ctx.warnings.append('Fragmented NV ⚠️')
             ctx.nv_score=max(0,np); score+=ctx.nv_score
         else:
             ctx.warnings.append(f'NV: {nv.reason}')
@@ -729,7 +724,7 @@ class MMCEngine:
         return ctx
 
 # ═══════════════════════════════════════════════════════
-#  ICT ENGINE v6.0
+#  ICT ENGINE v6.1
 # ═══════════════════════════════════════════════════════
 class ICTEngine:
 
@@ -742,7 +737,6 @@ class ICTEngine:
         return sum(trs[-period:])/period
 
     def get_avg_atr(self, candles, period=50) -> float:
-        """NEW v6: Average ATR for volatility comparison"""
         if len(candles) < period+1: return self.get_atr(candles)
         atrs = []
         for i in range(period, len(candles)):
@@ -771,10 +765,10 @@ class ICTEngine:
         return result
 
     def get_trend(self, swings) -> str:
-        if len(swings) < 4: return 'ranging'
-        last = [s.type for s in swings[-8:]]
-        if last.count('HH')+last.count('HL') >= 4: return 'uptrend'
-        if last.count('LL')+last.count('LH') >= 4: return 'downtrend'
+        if len(swings) < 3: return 'ranging'
+        last = [s.type for s in swings[-6:]]
+        if last.count('HH')+last.count('HL') >= 3: return 'uptrend'
+        if last.count('LL')+last.count('LH') >= 3: return 'downtrend'
         return 'ranging'
 
     def trend_strength(self, swings) -> int:
@@ -887,12 +881,12 @@ class ICTEngine:
         if len(candles)<10: return False,''
         recent=candles[-10:]; atr=self.get_atr(candles)
         if direction=='bullish':
-            if (any(c.is_bearish() and c.body_size()>=atr*1.2 for c in recent[:5]) and
-                    any(c.is_bullish() and c.body_size()>=atr*1.2 for c in recent[5:])):
+            if (any(c.is_bearish() and c.body_size()>=atr*1.0 for c in recent[:5]) and
+                    any(c.is_bullish() and c.body_size()>=atr*1.0 for c in recent[5:])):
                 return True,'bearish_fake'
         else:
-            if (any(c.is_bullish() and c.body_size()>=atr*1.2 for c in recent[:5]) and
-                    any(c.is_bearish() and c.body_size()>=atr*1.2 for c in recent[5:])):
+            if (any(c.is_bullish() and c.body_size()>=atr*1.0 for c in recent[:5]) and
+                    any(c.is_bearish() and c.body_size()>=atr*1.0 for c in recent[5:])):
                 return True,'bullish_fake'
         return False,''
 
@@ -920,14 +914,13 @@ class ICTEngine:
         return False,''
 
     def ltf_choch(self, ltf, direction) -> bool:
-        """v6.0: HARD CHECK — must confirm"""
-        if len(ltf) < 15: return False
-        sw = self.classify_structure(self.detect_swings(ltf[-50:], lb=3))
-        if len(sw) < 3: return False
+        if len(ltf) < 12: return False
+        sw = self.classify_structure(self.detect_swings(ltf[-40:], lb=2))
+        if len(sw) < 2: return False
         trend = self.get_trend(sw)
         if direction == 'bullish':
-            return trend == 'uptrend'
-        return trend == 'downtrend'
+            return trend in ['uptrend','ranging']
+        return trend in ['downtrend','ranging']
 
     def mtf_trend(self, htf, daily, weekly, direction) -> Tuple[bool,int]:
         def tr(c):
@@ -946,7 +939,7 @@ class ICTEngine:
         return sorted(levels)
 
 # ═══════════════════════════════════════════════════════
-#  MASTER ENGINE v6.0
+#  MASTER ENGINE v6.1
 # ═══════════════════════════════════════════════════════
 class MasterEngine:
     def __init__(self):
@@ -954,8 +947,8 @@ class MasterEngine:
 
     def analyse(self, symbol, htf, ltf, daily, weekly,
                 smt_candles=None, oil_bias='neutral') -> SMCSignal:
-        ts  = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-        cfg = Config.for_symbol(symbol)
+        ts   = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+        cfg  = Config.for_symbol(symbol)
         is_c = fetcher.detect_type(symbol)=='crypto'
         kz   = ICTTimeEngine.get_kill_zone()
 
@@ -965,27 +958,27 @@ class MasterEngine:
                           session=kz,warnings=warns,timestamp=ts)
             return s
 
-        # ── GATE 1: Session filter (NEW v6) ─────────────────
+        # ── GATE 1: Session ──────────────────────────────────
         if Config.BLOCK_DEAD_SESSION and not is_c:
             session_ok, sess_name = ICTTimeEngine.is_valid_session(is_c)
             if not session_ok:
                 return no_sig([f'Dead session blocked: {sess_name}'])
 
-        # ── GATE 2: News filter (60 min buffer) ──────────────
+        # ── GATE 2: News ─────────────────────────────────────
         if ICTTimeEngine.is_news_time():
-            return no_sig(['News time — 60min buffer'])
+            return no_sig([f'News time — {Config.NEWS_BUFFER_MINS}min buffer'])
 
-        # ── GATE 3: Candle count check ───────────────────────
-        if len(htf) < 50:  return no_sig(['Insufficient HTF data'])
-        if len(ltf) < 20:  return no_sig(['Insufficient LTF data'])
+        # ── GATE 3: Data check ───────────────────────────────
+        if len(htf) < 40:  return no_sig(['Insufficient HTF data'])
+        if len(ltf) < 10:  return no_sig(['Insufficient LTF data'])
 
-        cp  = htf[-1].close
-        atr = self.ict.get_atr(htf)
+        cp      = htf[-1].close
+        atr     = self.ict.get_atr(htf)
         avg_atr = self.ict.get_avg_atr(htf)
 
-        # ── GATE 4: Volatility spike check (NEW v6) ──────────
+        # ── GATE 4: ATR spike ────────────────────────────────
         if avg_atr > 0 and atr > avg_atr * Config.ATR_SPIKE_MULT:
-            return no_sig([f'ATR spike: {atr:.5f} > {avg_atr*Config.ATR_SPIKE_MULT:.5f}'])
+            return no_sig([f'ATR spike blocked: {atr:.5f} > {avg_atr*Config.ATR_SPIKE_MULT:.5f}'])
 
         sw    = self.ict.classify_structure(self.ict.detect_swings(htf))
         trend = self.ict.get_trend(sw)
@@ -994,8 +987,8 @@ class MasterEngine:
 
         direction = 'bullish' if trend=='uptrend' else 'bearish'
 
-        # ── GATE 5: Trend strength (NEW v6 — HARD) ───────────
-        ts_val = self.ict.trend_strength(sw)
+        # ── GATE 5: Trend strength ───────────────────────────
+        ts_val  = self.ict.trend_strength(sw)
         min_ts  = cfg.get('min_trend', Config.MIN_TREND_STRENGTH)
         if ts_val < min_ts:
             return no_sig([f'Trend too weak: {ts_val}/{min_ts}'])
@@ -1003,8 +996,8 @@ class MasterEngine:
         # ── OBs ──────────────────────────────────────────────
         obs   = self.ict.find_obs(htf, direction)
         fresh = [o for o in obs if o.status=='fresh']
-        if not fresh:
-            return no_sig(['No fresh Order Block found'])
+        if not fresh: fresh = obs
+        if not fresh: return no_sig(['No Order Block found'])
 
         all_fvg  = self.ict.find_fvgs(htf, direction)
         fresh_fg = [f for f in all_fvg if f.status=='fresh']
@@ -1012,19 +1005,15 @@ class MasterEngine:
         best_ob = None
         for ob in reversed(fresh):
             prox = abs(cp - ob.midpoint) / max(ob.midpoint, 1e-9)
-            if prox < Config.OB_PROXIMITY_PCT:   # v6: tighter 2%
+            if prox < Config.OB_PROXIMITY_PCT:
                 best_ob = ob; break
-        if not best_ob:
-            return no_sig([f'Price not near fresh OB (>{Config.OB_PROXIMITY_PCT*100:.0f}% away)'])
+        if not best_ob: best_ob = fresh[-1]
 
-        best_fvg=None
+        best_fvg = None
         for fvg in reversed(fresh_fg):
             if fvg.zone_low<=best_ob.zone_high and fvg.zone_high>=best_ob.zone_low:
                 best_fvg=fvg; break
-
-        # ── GATE 6: Require OB+FVG combo (NEW v6) ────────────
-        if not best_fvg:
-            return no_sig(['No FVG overlapping OB — requires OB+FVG combo'])
+        # NOTE: OB alone is allowed in v6.1 (no hard gate for FVG)
 
         # ── ICT context ──────────────────────────────────────
         ict = ICTContext()
@@ -1039,7 +1028,7 @@ class MasterEngine:
         ict.above_830=(cp>o830)    if o830 else False
         ict.above_930=(cp>o930)    if o930 else False
         ac = sum([ict.above_midnight, ict.above_830, ict.above_930])
-        ict.premium_discount = ('deep_premium' if ac>=2 else 'deep_discount' if ac<=1 else 'neutral')
+        ict.premium_discount=('deep_premium' if ac>=2 else 'deep_discount' if ac<=1 else 'neutral')
 
         since_mn = self.ict.get_candles_since_midnight(ltf)
         if len(since_mn)>=3:
@@ -1052,20 +1041,18 @@ class MasterEngine:
                 mh=max(c.high for c in seg); ml2=min(c.low for c in seg)
                 s15,s25,s45=self.ict.calc_sd_zones(mh,ml2,direction)
                 ict.sd_15=s15; ict.sd_25=s25; ict.sd_45=s45
-                buf=atr*0.5
+                buf=atr*0.6
                 ict.at_sd_zone=('4.5' if abs(cp-s45)<=buf else
                                 '2.5' if abs(cp-s25)<=buf else
                                 '1.5' if abs(cp-s15)<=buf else '')
 
         ict.buy_pools,ict.sell_pools=self.ict.find_liquidity_pools(htf)
         if direction=='bullish':
-            if any(p.swept for p in ict.sell_pools): ict.liquidity_swept=True; ict.swept_side='sell_side'
+            if any(p.swept for p in ict.sell_pools):
+                ict.liquidity_swept=True; ict.swept_side='sell_side'
         else:
-            if any(p.swept for p in ict.buy_pools):  ict.liquidity_swept=True; ict.swept_side='buy_side'
-
-        # ── GATE 7: Liquidity sweep required (NEW v6) ────────
-        if Config.REQUIRE_LIQUIDITY_SWEEP and not ict.liquidity_swept:
-            return no_sig(['Liquidity NOT swept — required in v6.0'])
+            if any(p.swept for p in ict.buy_pools):
+                ict.liquidity_swept=True; ict.swept_side='buy_side'
 
         ict.po3_phase=self.ict.detect_po3_phase(ltf,direction)
         ict.ohlc_model=self.ict.detect_ohlc_model(daily)
@@ -1077,9 +1064,9 @@ class MasterEngine:
         if ict.is_930_passed and ict.manipulation_830:
             last3=htf[-3:]
             if direction=='bullish':
-                ict.confirmed_930=any(c.is_bullish() and c.body_size()>=atr*0.8 for c in last3)
+                ict.confirmed_930=any(c.is_bullish() and c.body_size()>=atr*0.6 for c in last3)
             else:
-                ict.confirmed_930=any(c.is_bearish() and c.body_size()>=atr*0.8 for c in last3)
+                ict.confirmed_930=any(c.is_bearish() and c.body_size()>=atr*0.6 for c in last3)
 
         if smt_candles and len(smt_candles)>=20:
             ict.smt_divergence,ict.smt_direction=self.ict.detect_smt(htf,smt_candles,direction)
@@ -1087,15 +1074,15 @@ class MasterEngine:
 
         mtf_full,mtf_cnt=self.ict.mtf_trend(htf,daily,weekly,direction)
 
-        # ── GATE 8: 3/3 MTF alignment required (NEW v6) ──────
-        if Config.REQUIRE_3_3_MTF and not mtf_full:
-            return no_sig([f'MTF not aligned 3/3 — only {mtf_cnt}/3'])
+        # ── GATE 6: MTF — need 2/3 minimum ───────────────────
+        if mtf_cnt < 2:
+            return no_sig([f'MTF not aligned — only {mtf_cnt}/3 (need 2+)'])
 
         ltf_ok=self.ict.ltf_choch(ltf,direction)
 
-        # ── GATE 9: LTF CHOCH required (NEW v6 HARD GATE) ────
+        # ── GATE 7: LTF CHOCH ────────────────────────────────
         if Config.REQUIRE_LTF_CHOCH and not ltf_ok:
-            return no_sig(['LTF CHOCH not confirmed — HARD GATE'])
+            return no_sig(['LTF CHOCH not confirmed'])
 
         def cb(c):
             if not c: return 'neutral'
@@ -1105,10 +1092,6 @@ class MasterEngine:
         bias=('bullish' if [wb,db].count('bullish')>=2 else
               'bearish' if [wb,db].count('bearish')>=2 else 'neutral')
 
-        # ── GATE 10: HTF bias alignment ───────────────────────
-        if bias != direction and bias != 'neutral':
-            return no_sig([f'HTF bias mismatch: bias={bias} direction={direction}'])
-
         sr_levels=self.ict.get_sr_levels(htf)
 
         # ── MMC ──────────────────────────────────────────────
@@ -1116,7 +1099,7 @@ class MasterEngine:
                                       best_ob.zone_low,best_ob.zone_high,sr_levels)
 
         # ════════════════════════════════════════════════════
-        #  SCORING v6.0
+        #  SCORING v6.1
         # ════════════════════════════════════════════════════
         score=0; reasons=[]; warns=[]
 
@@ -1124,8 +1107,8 @@ class MasterEngine:
         if kz in Config.ALLOWED_SESSIONS: score+=2; reasons.append(f'Kill zone: {kz} ✅✅')
         elif is_c:                         score+=1; reasons.append('Crypto 24/7 ✅')
         if ma:                             score+=1; reasons.append(f'Macro: {ml} ✅')
-        if ict.manipulation_830:           score+=1; reasons.append(f'8:30 manip ✅')
-        if ict.confirmed_930:              score+=1; reasons.append('9:30 confirmed ✅✅')
+        if ict.manipulation_830:           score+=1; reasons.append('8:30 manip ✅')
+        if ict.confirmed_930:              score+=1; reasons.append('9:30 confirmed ✅')
 
         # ICT PRICE (up to 4)
         if mo:
@@ -1138,8 +1121,8 @@ class MasterEngine:
                (direction=='bearish' and ict.premium_discount=='deep_premium'))
         if pd_ok: score+=2; reasons.append(ict.premium_discount.replace('_',' ').title()+' ✅✅')
 
-        if ict.fpfvg:      score+=1; reasons.append('FPFVG ✅')
-        if ict.at_sd_zone: score+=1; reasons.append(f'{ict.at_sd_zone} SD zone ✅')
+        if ict.fpfvg:       score+=1; reasons.append('FPFVG ✅')
+        if ict.at_sd_zone:  score+=1; reasons.append(f'{ict.at_sd_zone} SD zone ✅')
 
         # NARRATIVE (up to 4)
         if ict.po3_phase == PO3Phase.MANIPULATION:
@@ -1154,45 +1137,50 @@ class MasterEngine:
         if ohlc_ok: score+=1; reasons.append('OHLC model ✅')
 
         if ict.liquidity_swept: score+=2; reasons.append('Liquidity swept ✅✅')
+        else:                   warns.append('Liquidity not swept ⚠️')
         if ict.smt_divergence:  score+=1; reasons.append(f'SMT vs {ict.smt_pair} ✅')
 
-        # SMC CONFIRMATION (up to 4)
-        if bias==direction: score+=1; reasons.append(f'HTF bias W:{wb} D:{db} ✅')
+        # SMC (up to 4)
+        if bias == direction:   score+=1; reasons.append(f'HTF bias W:{wb} D:{db} ✅')
+        elif bias != 'neutral': warns.append(f'HTF bias mismatch: {bias} ⚠️')
 
-        if best_fvg: score+=2; reasons.append('OB+FVG combo ✅✅')
+        if best_fvg:    score+=2; reasons.append('OB+FVG combo ✅✅')
+        else:           score+=1; reasons.append(f'OB only @ {best_ob.zone_low:.5f}')
 
-        if mtf_full:   score+=2; reasons.append('3/3 TFs aligned ✅✅')
-        elif mtf_cnt>=2: score+=1; reasons.append(f'{mtf_cnt}/3 TFs ✅')
+        if mtf_full:       score+=2; reasons.append('3/3 TFs aligned ✅✅')
+        elif mtf_cnt >= 2: score+=1; reasons.append(f'{mtf_cnt}/3 TFs ✅')
 
         if ltf_ok: score+=1; reasons.append('LTF CHOCH ✅')
-
         if ict.judas_swing: score+=1; reasons.append('Judas swing ✅')
 
-        # MMC bonus (up to 6 in v6)
-        mmc_add = min(mmc_ctx.mmcScore, 6)
+        # MMC bonus (up to 5)
+        mmc_add = min(mmc_ctx.mmcScore, 5)
         score+=mmc_add
         reasons.extend(mmc_ctx.reasons)
         warns.extend(mmc_ctx.warnings)
 
-        # Trend strength bonus
-        if ts_val >= 3: score+=1; reasons.append('Strong trend (3/3) ✅')
+        if ts_val >= 3: score+=1; reasons.append('Strong trend ✅')
 
         if cfg.get('check_oil') and oil_bias!='neutral':
             oil_imp='bearish' if oil_bias=='bullish' else 'bullish'
             if oil_imp!=direction: warns.append(f'Oil conflict: {oil_bias} ⚠️')
 
         # Normalize to /10
-        normalized = min(10, round((score/30)*10))
+        normalized = min(10, round((score/28)*10))
 
         if normalized < cfg['min_score']:
             s=no_sig([f'Score {normalized} < required {cfg["min_score"]}', *warns])
             s.ict=ict; s.mmc=mmc_ctx; return s
 
         # ── Entry / SL / TP ──────────────────────────────────
-        el=max(best_ob.zone_low,best_fvg.zone_low)
-        eh=min(best_ob.zone_high,best_fvg.zone_high)
-        if el>=eh: el,eh=best_ob.zone_low,best_ob.zone_high
-        bt='OB + FVG'
+        if best_fvg:
+            el=max(best_ob.zone_low,best_fvg.zone_low)
+            eh=min(best_ob.zone_high,best_fvg.zone_high)
+            if el>=eh: el,eh=best_ob.zone_low,best_ob.zone_high
+            bt='OB + FVG'
+        else:
+            el,eh=best_ob.zone_low,best_ob.zone_high
+            bt='Order Block'
 
         entry=(el+eh)/2; buf2=entry*cfg['sl_buffer_pct']
         sl=(el-buf2 if direction=='bullish' else eh+buf2)
@@ -1271,26 +1259,26 @@ def scan_one_pair(symbol: str) -> Optional[SMCSignal]:
         log.error(f'scan_one_pair {symbol}: {e}'); return None
 
 # ═══════════════════════════════════════════════════════
-#  FORMAT SIGNAL v6.0
+#  FORMAT SIGNAL
 # ═══════════════════════════════════════════════════════
 PO3_EMOJI = {
-    PO3Phase.ACCUMULATION: '⏸ Accumulation',
-    PO3Phase.MANIPULATION: '🎭 Manipulation',
-    PO3Phase.DISTRIBUTION: '🚀 Distribution',
-    PO3Phase.UNKNOWN:      '❓ Unknown'
+    PO3Phase.ACCUMULATION:'⏸ Accumulation',
+    PO3Phase.MANIPULATION:'🎭 Manipulation',
+    PO3Phase.DISTRIBUTION:'🚀 Distribution',
+    PO3Phase.UNKNOWN:     '❓ Unknown',
 }
 NV_Q_EMOJI = {
-    NVQuality.PREMIUM:  '⭐⭐⭐ PREMIUM',
-    NVQuality.STANDARD: '⭐⭐ STANDARD',
-    NVQuality.WEAK:     '⭐ WEAK',
-    NVQuality.NONE:     ''
+    NVQuality.PREMIUM: '⭐⭐⭐ PREMIUM',
+    NVQuality.STANDARD:'⭐⭐ STANDARD',
+    NVQuality.WEAK:    '⭐ WEAK',
+    NVQuality.NONE:    '',
 }
 
 def format_signal(sig: SMCSignal, symbol: str,
                   is_alert: bool=False, is_crypto: bool=False,
                   account_balance: float=0) -> str:
     cfg=Config.for_symbol(symbol); ict=sig.ict; mmc=sig.mmc
-    badge='🚨 <b>HIGH ACCURACY ALERT — ICT+SMC+MMC v6.0</b>\n' if is_alert else ''
+    badge='🚨 <b>SIGNAL — ICT+SMC+MMC v6.1</b>\n' if is_alert else ''
     mkt='🔵 Crypto (24/7)' if is_crypto else ICTTimeEngine.session_label()
 
     if not sig.is_valid():
@@ -1306,7 +1294,7 @@ def format_signal(sig: SMCSignal, symbol: str,
     rsns='\n'.join(f'  ✅ {r}' for r in sig.reasons)
     warns_txt='\n'.join(f'  ⚠️ {w}' for w in sig.warnings)
     vdir='UPTREND' if sig.direction==SignalDirection.LONG else 'DOWNTREND'
-    sw='LOW sweep+CHOCH UP' if sig.direction==SignalDirection.LONG else 'HIGH sweep+CHOCH DOWN'
+    sw_='LOW sweep+CHOCH UP' if sig.direction==SignalDirection.LONG else 'HIGH sweep+CHOCH DOWN'
 
     ml=f'⚡ Macro: {ict.macro_label}\n' if ict.macro_active else ''
     po3l=f'📖 PO3: {PO3_EMOJI.get(ict.po3_phase,"")}\n'
@@ -1315,7 +1303,7 @@ def format_signal(sig: SMCSignal, symbol: str,
     jl='🎭 Judas: Detected ✅\n' if ict.judas_swing else ''
 
     tick=lambda b:'✅' if b else '❌'
-    pde=('🔴 Deep Premium' if ict.premium_discount=='deep_premium' else
+    pde=('🔴 Deep Premium'  if ict.premium_discount=='deep_premium'  else
          '🟢 Deep Discount' if ict.premium_discount=='deep_discount' else '⚪ Neutral')
     ob_blk=''
     if ict.midnight_open:
@@ -1347,7 +1335,7 @@ def format_signal(sig: SMCSignal, symbol: str,
     if mmc:
         fo_txt='✅ Confirmed' if mmc.fakeout_detected else f'({mmc.fakeout_probability})'
         ltf_rej='✅' if mmc.ltf_rejection_confirmed else '❌'
-        mmcq=(f'━━━━━━━━━━━━━━━━━━━━━━\n🧠 <b>MMC v6</b> '
+        mmcq=(f'━━━━━━━━━━━━━━━━━━━━━━\n🧠 <b>MMC v6.1</b> '
               f'Candle:{mmc.candle_nature_score}/4 '
               f'LTFRej:{ltf_rej} '
               f'Fakeout:{fo_txt} '
@@ -1380,13 +1368,13 @@ def format_signal(sig: SMCSignal, symbol: str,
         f'<b>Confluences ({len(sig.reasons)}):</b>\n{rsns}\n'
         + (f'\n<b>Warnings:</b>\n{warns_txt}\n' if warns_txt else '') +
         f'━━━━━━━━━━━━━━━━━━━━━━\n'
-        f'📋 VERIFY: 1H {vdir} | OB+FVG @ entry\n'
-        f'          5M {sw} | LTF rejection ✅\n'
+        f'📋 VERIFY: 1H {vdir} | {sig.block_type} @ entry\n'
+        f'          5M {sw_} | LTF rejection\n'
         f'⏰ {sig.timestamp}'
     )
 
 # ═══════════════════════════════════════════════════════
-#  AUTO SCANNER v6.0
+#  AUTO SCANNER
 # ═══════════════════════════════════════════════════════
 async def auto_scanner(app):
     await asyncio.sleep(30)
@@ -1398,14 +1386,14 @@ async def auto_scanner(app):
                 log.info('Daily loss limit — paused')
                 await asyncio.sleep(30*60); continue
             if not ScannerState.daily_alert_ok():
-                log.info(f'Daily alert limit reached ({Config.MAX_ALERTS_PER_DAY})')
+                log.info(f'Daily alert limit {Config.MAX_ALERTS_PER_DAY} reached')
                 await asyncio.sleep(60*60); continue
             if ICTTimeEngine.is_news_time():
-                log.info('News time — skipping scan (60min buffer)')
-                await asyncio.sleep(15*60); continue
+                log.info('News time — skipping scan')
+                await asyncio.sleep(10*60); continue
 
             kz = ICTTimeEngine.get_kill_zone()
-            log.info(f'Auto scan v6.0 [{kz}] — {len(ALL_SCAN_PAIRS)} pairs')
+            log.info(f'Auto scan v6.1 [{kz}] — {len(ALL_SCAN_PAIRS)} pairs')
             found = 0
 
             for symbol in ALL_SCAN_PAIRS:
@@ -1422,23 +1410,23 @@ async def auto_scanner(app):
                             text=msg, parse_mode='HTML')
                         found += 1
                         log.info(f'ALERT {symbol} S:{sig.confluence_score} RR:{sig.rr_ratio}')
-                        await asyncio.sleep(3)
+                        await asyncio.sleep(2)
                         if not ScannerState.daily_alert_ok(): break
                 except Exception as e:
                     log.error(f'Scanner {symbol}: {e}')
                 await asyncio.sleep(0.5)
 
-            log.info(f'Scan complete — {found} alerts | today total: {ScannerState.total_alerts_today}')
+            log.info(f'Scan done — {found} alerts | today: {ScannerState.total_alerts_today}/{Config.MAX_ALERTS_PER_DAY}')
             await asyncio.sleep(Config.SCAN_INTERVAL_MINS * 60)
         except Exception as e:
             log.error(f'Auto scanner error: {e}')
             await asyncio.sleep(60)
 
 # ═══════════════════════════════════════════════════════
-#  HELP TEXT v6.0
+#  HELP TEXT
 # ═══════════════════════════════════════════════════════
 HELP_TEXT = """
-🤖 <b>ICT + SMC + MMC Bot v6.0 HIGH ACCURACY</b>
+🤖 <b>ICT + SMC + MMC Bot v6.1 BALANCED</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 
 <b>Commands:</b>
@@ -1454,32 +1442,30 @@ HELP_TEXT = """
 <b>Send any symbol for analysis:</b>
   XAUUSD  BTCUSDT  EURUSD  GBPJPY
 
-<b>v6.0 Accuracy Improvements:</b>
-  ✅ Score ≥ 8  | RR ≥ 2.2
+<b>v6.1 Balanced Settings:</b>
+  ✅ Score ≥ 7  | RR ≥ 2.0
   ✅ Dead session BLOCKED
-  ✅ LTF CHOCH HARD gate
-  ✅ 3/3 MTF alignment required
-  ✅ Liquidity sweep required
-  ✅ OB+FVG combo required
-  ✅ Trend strength ≥ 2/3
-  ✅ News buffer 60min
-  ✅ Volatility spike blocked
-  ✅ Max 5 alerts/day
-  ✅ LTF rejection confirmed
+  ✅ LTF CHOCH required
+  ✅ 2/3 MTF alignment required
+  ✅ OB alone allowed (FVG = bonus)
+  ✅ Liquidity sweep = bonus score
+  ✅ News buffer 45min
+  ✅ Max 8 alerts/day
+  Target: 5-8 signals/week
 
-<b>Frameworks:</b>
-  SMC : OB+FVG BOS CHOCH Liquidity
-  ICT : NYMO FPFVG SD Macros PO3 SMT
-  MMC : Fakeout 99% CCP Structure NV
-  NV  : Channel IFC Body S/R Quality
+<b>Sessions traded:</b>
+  🟢 London Open (2AM–5AM NY)
+  🟡 London (5AM–8AM NY)
+  🟠 Pre-NY (7AM–8AM NY)
+  🟢 NY Open (8AM–11AM NY)
 
 <b>Score breakdown:</b>
   TIME (4)   Kill zone Macro 8:30 9:30
   ICT  (4)   NYMO FPFVG SD Premium
   NARR (4)   PO3 OHLC Liquidity SMT
   SMC  (4)   HTF OB+FVG MTF CHOCH
-  MMC  (6)   Candle LTFRej NV Fakeout
-  9–10 ⭐⭐⭐ | 7–8 ⭐⭐ | 6 ⭐
+  MMC  (5)   Candle LTFRej NV Fakeout
+  9–10 ⭐⭐⭐ | 7–8 ⭐⭐ | 5–6 ⭐
 """
 
 # ═══════════════════════════════════════════════════════
@@ -1494,11 +1480,10 @@ async def help_handler(u, c):
 async def on_handler(u, c):
     ScannerState.auto_alerts_on = True
     await u.message.reply_text(
-        f'✅ <b>Auto Alerts ON — v6.0 HIGH ACCURACY</b>\n\n'
+        f'✅ <b>Auto Alerts ON — v6.1 BALANCED</b>\n\n'
         f'Score   : ≥{Config.ALERT_MIN_SCORE} | RR ≥{Config.ALERT_MIN_RR}\n'
-        f'Session : London Open + NY Open only\n'
-        f'Filters : 10 hard gates active\n'
-        f'Max/day : {ScannerState.MAX_ALERTS_PER_DAY} alerts\n'
+        f'Session : London + Pre-NY + NY Open\n'
+        f'Max/day : {Config.MAX_ALERTS_PER_DAY} alerts\n'
         f'Interval: every {Config.SCAN_INTERVAL_MINS} min',
         parse_mode='HTML')
 
@@ -1513,13 +1498,13 @@ async def status_handler(u, c):
     sess_ok,_ = ICTTimeEngine.is_valid_session(False)
     ScannerState.check_daily_reset()
     await u.message.reply_text(
-        f'📊 <b>Bot v6.0 HIGH ACCURACY Status</b>\n'
+        f'📊 <b>Bot v6.1 BALANCED Status</b>\n'
         f'━━━━━━━━━━━━━━━━━━━━━━\n'
         f'Alerts   : {"✅ ON" if ScannerState.auto_alerts_on else "🔕 OFF"}\n'
         f'Daily OK : {"✅" if ScannerState.daily_loss_ok() else "🛑 STOPPED"}\n'
         f'NY Time  : {ny}\n'
         f'Session  : {ICTTimeEngine.session_label()}\n'
-        f'Trading? : {"✅ YES" if sess_ok else "🔴 BLOCKED (dead session)"}\n'
+        f'Trading? : {"✅ YES" if sess_ok else "🔴 BLOCKED"}\n'
         f'Macro    : {"✅ "+ml if ma else "❌"}\n'
         f'News     : {"⚠️ BLOCKED" if ICTTimeEngine.is_news_time() else "✅ Clear"}\n'
         f'8:30     : {"✅" if ICTTimeEngine.is_830_passed() else "❌"}\n'
@@ -1529,16 +1514,15 @@ async def status_handler(u, c):
         f'Alert    : Score≥{Config.ALERT_MIN_SCORE} RR≥{Config.ALERT_MIN_RR}\n'
         f'Valid    : Score≥{Config.MIN_CONFLUENCE_SCORE} RR≥{Config.MIN_RR_RATIO}\n'
         f'Cooldown : {Config.ALERT_COOLDOWN_HOURS}h\n'
-        f'Today    : {ScannerState.total_alerts_today}/{ScannerState.MAX_ALERTS_PER_DAY} alerts\n'
+        f'Today    : {ScannerState.total_alerts_today}/{Config.MAX_ALERTS_PER_DAY} alerts\n'
         f'Alerted  : {len(ScannerState.last_alerted)} pairs\n'
         f'━━━━━━━━━━━━━━━━━━━━━━\n'
-        f'<b>v6.0 Hard Gates:</b>\n'
-        f'  Session gate  : {"✅" if Config.BLOCK_DEAD_SESSION else "❌"}\n'
-        f'  LTF CHOCH     : {"✅" if Config.REQUIRE_LTF_CHOCH else "❌"}\n'
-        f'  3/3 MTF       : {"✅" if Config.REQUIRE_3_3_MTF else "❌"}\n'
-        f'  Liq sweep     : {"✅" if Config.REQUIRE_LIQUIDITY_SWEEP else "❌"}\n'
-        f'  OB+FVG combo  : ✅\n'
-        f'  Trend ≥{Config.MIN_TREND_STRENGTH}/3    : ✅\n'
+        f'<b>Active Gates:</b>\n'
+        f'  Session block : ✅\n'
+        f'  LTF CHOCH     : ✅\n'
+        f'  MTF 2/3+      : ✅\n'
+        f'  ATR spike     : ✅\n'
+        f'  News 45min    : ✅\n'
         f'━━━━━━━━━━━━━━━━━━━━━━\n'
         f'⏰ {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}',
         parse_mode='HTML')
@@ -1548,48 +1532,46 @@ async def debug_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
     if len(parts) < 2:
         await u.message.reply_text('Usage: /debug SYMBOL\nExample: /debug XAUUSD'); return
     symbol = fetcher.normalize(parts[1])
-    loading = await u.message.reply_text(f'🔬 Debugging {symbol} (v6.0)...', parse_mode='HTML')
+    loading = await u.message.reply_text(f'🔬 Debugging {symbol} (v6.1)...', parse_mode='HTML')
     try:
         htf   = fetcher.fetch(symbol, Config.HTF, 200)
         ltf   = fetcher.fetch(symbol, Config.LTF, 150)
         daily = fetcher.fetch(symbol, '1d', 50)
-
         if not htf:
             await loading.edit_text(f'❌ No data for {symbol}'); return
 
-        ict_e = engine.ict; atr = ict_e.get_atr(htf)
+        ict_e   = engine.ict
+        atr     = ict_e.get_atr(htf)
         avg_atr = ict_e.get_avg_atr(htf)
-        sw    = ict_e.classify_structure(ict_e.detect_swings(htf))
-        trend = ict_e.get_trend(sw)
-        ts_val = ict_e.trend_strength(sw)
-        dir_  = 'bullish' if trend=='uptrend' else 'bearish'
-        obs   = ict_e.find_obs(htf, dir_)
-        fvgs  = ict_e.find_fvgs(htf, dir_)
+        sw      = ict_e.classify_structure(ict_e.detect_swings(htf))
+        trend   = ict_e.get_trend(sw)
+        ts_val  = ict_e.trend_strength(sw)
+        dir_    = 'bullish' if trend=='uptrend' else 'bearish'
+        obs     = ict_e.find_obs(htf, dir_)
+        fvgs    = ict_e.find_fvgs(htf, dir_)
         fresh_ob  = [o for o in obs  if o.status=='fresh']
         fresh_fvg = [f for f in fvgs if f.status=='fresh']
-        ltf_ok = ict_e.ltf_choch(ltf, dir_)
+        ltf_ok  = ict_e.ltf_choch(ltf, dir_)
         mo,o830,o930 = ict_e.get_key_opens(htf)
-        cp = htf[-1].close
+        cp      = htf[-1].close
         sess_ok,sess = ICTTimeEngine.is_valid_session(fetcher.detect_type(symbol)=='crypto')
 
-        # Check OB+FVG combo
         best_ob = None
         for ob in reversed(fresh_ob):
-            prox = abs(cp - ob.midpoint) / max(ob.midpoint, 1e-9)
-            if prox < Config.OB_PROXIMITY_PCT:
+            if abs(cp - ob.midpoint)/max(ob.midpoint,1e-9) < Config.OB_PROXIMITY_PCT:
                 best_ob = ob; break
-        has_combo = False
+
+        has_fvg = False
         if best_ob:
             for fvg in reversed(fresh_fvg):
                 if fvg.zone_low<=best_ob.zone_high and fvg.zone_high>=best_ob.zone_low:
-                    has_combo = True; break
+                    has_fvg = True; break
 
+        _,mtf_cnt = ict_e.mtf_trend(htf,daily,[],dir_)
         sig = scan_one_pair(symbol)
 
-        msg = (f'🔬 <b>DEBUG v6.0: {symbol}</b>\n'
+        msg = (f'🔬 <b>DEBUG v6.1: {symbol}</b>\n'
                f'━━━━━━━━━━━━━━━━━━━━━━\n'
-               f'HTF candles : {len(htf)}\n'
-               f'LTF candles : {len(ltf)}\n'
                f'Price       : {cp:.5f}\n'
                f'ATR         : {atr:.5f}\n'
                f'Avg ATR     : {avg_atr:.5f}\n'
@@ -1599,12 +1581,12 @@ async def debug_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
                f'News time?  : {"⚠️ YES" if ICTTimeEngine.is_news_time() else "✅ NO"}\n'
                f'━━━━━━━━━━━━━━━━━━━━━━\n'
                f'Trend       : {trend}\n'
-               f'Trend str   : {ts_val}/3 {"✅" if ts_val>=Config.MIN_TREND_STRENGTH else "❌ TOO WEAK"}\n'
-               f'Swing pts   : {len(sw)}\n'
+               f'Trend str   : {ts_val}/3 {"✅" if ts_val>=Config.MIN_TREND_STRENGTH else "❌"}\n'
                f'All OBs     : {len(obs)} | Fresh: {len(fresh_ob)}\n'
-               f'OB near px  : {"✅" if best_ob else "❌ NONE IN RANGE"}\n'
-               f'OB+FVG combo: {"✅" if has_combo else "❌ REQUIRED"}\n'
-               f'LTF CHOCH   : {"✅" if ltf_ok else "❌ BLOCKED"}\n'
+               f'OB in range : {"✅" if best_ob else "❌ None within 4%"}\n'
+               f'FVG+OB combo: {"✅" if has_fvg else "⚠️ OB only"}\n'
+               f'MTF align   : {mtf_cnt}/3 {"✅" if mtf_cnt>=2 else "❌ need 2+"}\n'
+               f'LTF CHOCH   : {"✅" if ltf_ok else "❌"}\n'
                f'━━━━━━━━━━━━━━━━━━━━━━\n'
                f'Midnight    : {f"{mo:.5f}" if mo else "Not found"}\n'
                f'8:30 Open   : {f"{o830:.5f}" if o830 else "Not found"}\n'
@@ -1612,18 +1594,17 @@ async def debug_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
                f'━━━━━━━━━━━━━━━━━━━━━━\n')
 
         if sig:
-            msg += (f'Signal result:\n'
+            msg += (f'Result:\n'
                     f'  Direction : {sig.direction.value}\n'
                     f'  Score     : {sig.confluence_score}/10\n'
                     f'  RR        : {sig.rr_ratio}\n'
                     f'  Valid     : {"✅" if sig.is_valid() else "❌"}\n'
                     f'  Alert     : {"✅" if sig.is_alert_worthy() else "❌"}\n')
-            blocks = sig.warnings[:8]
-            if blocks:
+            if sig.warnings:
                 msg += 'Blockers:\n'
-                for w in blocks: msg += f'  ⚠️ {w}\n'
+                for w in sig.warnings[:6]: msg += f'  ⚠️ {w}\n'
         else:
-            msg += 'No signal object returned\n'
+            msg += 'No signal returned\n'
 
         await loading.edit_text(msg, parse_mode='HTML')
     except Exception as e:
@@ -1631,9 +1612,8 @@ async def debug_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
 
 async def scan_handler(u, c):
     await u.message.reply_text(
-        f'🔍 Scanning {len(ALL_SCAN_PAIRS)} pairs (v6.0 HIGH ACCURACY)...\n'
+        f'🔍 Scanning {len(ALL_SCAN_PAIRS)} pairs (v6.1)...\n'
         f'Score≥{Config.ALERT_MIN_SCORE} | RR≥{Config.ALERT_MIN_RR}\n'
-        f'10 hard gates active\n'
         f'⏳ ~3-5 minutes...', parse_mode='HTML')
     found = []
     for symbol in ALL_SCAN_PAIRS:
@@ -1646,16 +1626,15 @@ async def scan_handler(u, c):
     if not found:
         await u.message.reply_text(
             f'🔍 <b>No setups found</b>\n\n'
-            f'Scanned: {len(ALL_SCAN_PAIRS)} pairs\n'
-            f'Need: Score≥{Config.ALERT_MIN_SCORE} RR≥{Config.ALERT_MIN_RR}\n\n'
-            f'v6.0 is very strict — fewer but higher quality signals\n'
-            f'💡 Use /debug XAUUSD to see why\n'
+            f'Scanned : {len(ALL_SCAN_PAIRS)} pairs\n'
+            f'Need    : Score≥{Config.ALERT_MIN_SCORE} RR≥{Config.ALERT_MIN_RR}\n\n'
+            f'💡 Use /debug XAUUSD to investigate\n'
             f'⏰ {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}',
             parse_mode='HTML')
         return
     nv_cnt = sum(1 for s,_ in found if s.is_nv_premium)
     await u.message.reply_text(
-        f'✅ <b>{len(found)} HIGH ACCURACY setup(s) found!</b>\n🏆 NV Premium: {nv_cnt}',
+        f'✅ <b>{len(found)} setup(s) found!</b>\n🏆 NV Premium: {nv_cnt}',
         parse_mode='HTML')
     for sig,is_c in found:
         msg = format_signal(sig, sig.symbol, is_alert=False, is_crypto=is_c)
@@ -1669,12 +1648,12 @@ async def pairs_handler(u, c):
         return '\n'.join(rows)
     smt_txt='\n'.join(f'  {k} ↔ {v}' for k,v in list(SMT_PAIRS.items())[:6])
     await u.message.reply_text(
-        f'👁 <b>Scanning {len(ALL_SCAN_PAIRS)} Pairs (v6.0)</b>\n'
+        f'👁 <b>Scanning {len(ALL_SCAN_PAIRS)} Pairs (v6.1)</b>\n'
         f'━━━━━━━━━━━━━━━━━━━━━━\n\n'
         f'🔵 <b>Crypto ({len(CRYPTO_PAIRS)}):</b>\n{fmt(CRYPTO_PAIRS)}\n\n'
         f'📈 <b>Forex+Metals+Oil ({len(FOREX_PAIRS_SCAN)}):</b>\n{fmt(FOREX_PAIRS_SCAN)}\n\n'
         f'<b>SMT pairs:</b>\n{smt_txt}\n\n'
-        f'<b>High value pairs (extra strict):</b>\n  {", ".join(HIGH_VALUE_PAIRS)}',
+        f'<b>High value:</b> {", ".join(HIGH_VALUE_PAIRS)}',
         parse_mode='HTML')
 
 async def size_handler(u, c):
@@ -1699,7 +1678,7 @@ async def size_calc_handler(u, c):
             f'SL dist  : {ps["sl_distance"]}\n'
             f'1% risk  : ${ps["risk_amount"]}\n'
             f'Lot size : {ps["lot_size"]}\n\n'
-            f'⚠️ v6.0 Rules: Max 1% risk | Stop at 2% daily loss',
+            f'⚠️ Max 1% risk per trade | Stop at 2% daily loss',
             parse_mode='HTML')
     except Exception as e:
         await u.message.reply_text(f'❌ {e}')
@@ -1708,7 +1687,7 @@ async def symbol_handler(u: Update, c: ContextTypes.DEFAULT_TYPE):
     symbol = fetcher.normalize(u.message.text.strip())
     is_c   = fetcher.detect_type(symbol)=='crypto'
     loading = await u.message.reply_text(
-        f'🔍 <b>{symbol}</b> — ICT+SMC+MMC v6.0 HIGH ACCURACY\n⏳ Analysing...', parse_mode='HTML')
+        f'🔍 <b>{symbol}</b> — ICT+SMC+MMC v6.1\n⏳ Analysing...', parse_mode='HTML')
     try:
         start=time.time(); cfg=Config.for_symbol(symbol); ss=SMT_PAIRS.get(symbol)
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
@@ -1741,11 +1720,11 @@ def main():
         log.error('TELEGRAM_BOT_TOKEN not set'); return
 
     log.info('━'*50)
-    log.info('ICT + SMC + MMC Bot v6.0 HIGH ACCURACY')
-    log.info(f'Alert: Score≥{Config.ALERT_MIN_SCORE} RR≥{Config.ALERT_MIN_RR}')
+    log.info('ICT + SMC + MMC Bot v6.1 BALANCED')
+    log.info(f'Alert : Score≥{Config.ALERT_MIN_SCORE} RR≥{Config.ALERT_MIN_RR}')
     log.info(f'Valid : Score≥{Config.MIN_CONFLUENCE_SCORE} RR≥{Config.MIN_RR_RATIO}')
     log.info(f'Pairs : {len(ALL_SCAN_PAIRS)}')
-    log.info(f'Gates : Session+CHOCH+MTF+Liquidity+OB+FVG+Trend+ATR+News+HTFBias')
+    log.info(f'Gates : Session+CHOCH+MTF(2/3)+ATR+News')
     log.info('━'*50)
 
     app = ApplicationBuilder().token(token).build()
@@ -1764,7 +1743,7 @@ def main():
     async def post_init(application):
         if Config.TELEGRAM_CHAT_ID:
             asyncio.create_task(auto_scanner(application))
-            log.info('Auto scanner v6.0 started ✅')
+            log.info('Auto scanner v6.1 started ✅')
         else:
             log.warning('No CHAT_ID — auto scanner disabled')
 
